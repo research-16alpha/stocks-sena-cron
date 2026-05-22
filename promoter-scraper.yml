@@ -1,0 +1,29 @@
+name: Promoter Scraper
+
+on:
+  schedule:
+    # Every 15 min during market hours (3:30 AM - 10 AM UTC = 9 AM - 3:30 PM IST), weekdays
+    - cron: '*/15 3-10 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run promoter scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python promoter_scraper.py

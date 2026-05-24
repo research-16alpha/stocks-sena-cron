@@ -33,10 +33,11 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 BUCKET = "intraday"
 SLEEP_BETWEEN = 1.0
 
-# Top 100 + 9 indices
+# Top 100 + indices + 4 newly-added sector indices for SectorDetailScreen
 INDICES = [
     "^NSEI", "^BSESN", "^NSEBANK", "^CNXIT", "^CNXPHARMA",
     "^CNXFMCG", "^CNXAUTO", "^CNXMETAL", "INR=X",
+    "^CNXFINANCE", "^CNXENERGY", "^CNXREALTY", "^CNXMEDIA",
 ]
 
 

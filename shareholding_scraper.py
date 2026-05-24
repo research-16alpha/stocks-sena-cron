@@ -53,15 +53,20 @@ HEADERS = {
 XBRLI_NS = "http://www.xbrl.org/2003/instance"
 XBRLDI_NS = "http://xbrl.org/2006/xbrldi"
 
-# Map NSE XBRL category members to our compact categories
+# Map NSE XBRL category members to our compact categories.
+# Two sources of category info in SEBI XBRL:
+#   1. explicitMember CategoryOfShareholdersAxis  -> aggregate per category
+#      uses full SEBI member names (e.g. "MutualFundsOrUTIMember")
+#   2. typedMember DetailsSharesHeldBy<Cat>Axis   -> individual holders
+#      uses abbreviated forms (e.g. "IndividualsOrHUF", "OthersIndianShareholders")
+# Both forms are mapped here.
 CATEGORY_MAP = {
-    # Promoter side
-    "IndividualsOrHinduUndividedFamilyMember": "promoter_individual",
-    "BodiesCorporateMember": "promoter_body_corporate",
-    "ForeignNationalsMember": "promoter_foreign",
-    "DirectorsAndDirectorsRelativesMember": "promoter_director",
+    # Full SEBI member names (from explicitMember)
+    "IndividualsOrHinduUndividedFamilyMember": "individual_holder",
+    "BodiesCorporateMember": "body_corporate",
+    "ForeignNationalsMember": "foreign_national",
+    "DirectorsAndDirectorsRelativesMember": "director",
     "RelativesOfPromotersOtherThanPromoterGroupMember": "promoter_relative",
-    # Institutional (public)
     "MutualFundsOrUTIMember": "mutual_fund",
     "InsuranceCompaniesMember": "insurance",
     "BanksMember": "bank_fi",
@@ -74,7 +79,6 @@ CATEGORY_MAP = {
     "InstitutionsForeignPortfolioInvestorCategoryTwoMember": "fpi_cat2",
     "ForeignDirectInvestmentMember": "fdi",
     "OtherInstitutionsForeignMember": "other_foreign",
-    # Non-institutional (public)
     "ResidentIndividualShareholdersHoldingNominalShareCapitalInExcessOfRsTwoLakhMember": "individual_above_2L",
     "ResidentIndividualShareholdersHoldingNominalShareCapitalUpToRsTwoLakhMember": "individual_under_2L",
     "NonResidentIndiansMember": "nri",
@@ -86,6 +90,13 @@ CATEGORY_MAP = {
     "OtherIndianShareholdersMember": "other_indian",
     "OtherNonInstitutionsMember": "other_non_institutional",
     "CustodianOrDRHolderMember": "custodian_dr",
+    # Abbreviated forms (from typedMember DetailsSharesHeldBy<Cat>Axis names + "Member")
+    "IndividualsOrHUFMember": "individual_holder",
+    "OthersIndianShareholdersMember": "other_indian",
+    "BodiesCorporateMember": "body_corporate",
+    "ProvidentFundsOrPensionFundsMember": "pension_fund",
+    "OtherInstitutionsForeignMember": "other_foreign",
+    "OtherNonInstitutionsMember": "other_non_institutional",
 }
 
 
@@ -174,10 +185,22 @@ def parse_xbrl(xbrl_bytes: bytes) -> dict | None:
         print("[shp] could not detect shp namespace", file=sys.stderr)
         return None
 
-    # Build context -> category-member map
+    # Build context -> category-member map. SEBI XBRL uses TWO patterns:
+    #
+    # 1. Category aggregate contexts: explicitMember with CategoryOfShareholdersAxis
+    #    e.g. <explicitMember dimension="...CategoryOfShareholdersAxis">
+    #             in-bse-shp:MutualFundsOrUTIMember
+    #         </explicitMember>
+    #
+    # 2. Individual holder contexts: typedMember with axis named DetailsSharesHeldBy<Category>Axis
+    #    e.g. <typedMember dimension="...DetailsSharesHeldByIndividualsOrHUFAxis">
+    #             <IndividualsOrHUFDomain>IndividualsOrHUF_Context15</IndividualsOrHUFDomain>
+    #         </typedMember>
+    #    Category extracted from dimension name (strip "DetailsSharesHeldBy" prefix + "Axis" suffix).
     ctx_to_member: dict[str, str] = {}
     for ctx in root.iter("{%s}context" % XBRLI_NS):
         ctx_id = ctx.attrib.get("id")
+        # explicit (aggregate) pattern
         for m in ctx.iter("{%s}explicitMember" % XBRLDI_NS):
             dim = m.attrib.get("dimension", "")
             if "CategoryOfShareholdersAxis" in dim:
@@ -185,6 +208,24 @@ def parse_xbrl(xbrl_bytes: bytes) -> dict | None:
                 if ":" in txt:
                     txt = txt.split(":")[-1]
                 ctx_to_member[ctx_id] = txt
+                break
+        if ctx_id in ctx_to_member:
+            continue
+        # typed (individual holder) pattern. SEBI XBRL uses two prefix variants:
+        #   "DetailsSharesHeldBy<Cat>Axis"   (e.g. IndividualsOrHUF)
+        #   "DetailsOfSharesHeldBy<Cat>Axis" (e.g. MutualFundsOrUTI, InsuranceCompanies)
+        for m in ctx.iter("{%s}typedMember" % XBRLDI_NS):
+            dim = m.attrib.get("dimension", "")
+            local_dim = dim.split(":")[-1] if ":" in dim else dim
+            if not local_dim.endswith("Axis"):
+                continue
+            cat = None
+            for prefix in ("DetailsSharesHeldBy", "DetailsOfSharesHeldBy"):
+                if local_dim.startswith(prefix):
+                    cat = local_dim[len(prefix):-len("Axis")]
+                    break
+            if cat:
+                ctx_to_member[ctx_id] = cat + "Member"
                 break
 
     pct_tag_candidates = [

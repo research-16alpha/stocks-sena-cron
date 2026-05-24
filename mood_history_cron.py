@@ -72,6 +72,15 @@ def stdev(values):
     var = sum((v - mean) ** 2 for v in values) / len(values)
     return math.sqrt(var)
 
+def ema(values, period):
+    """Exponential moving average. Returns full series (same length as input)."""
+    if not values: return []
+    k = 2.0 / (period + 1)
+    out = [values[0]]
+    for i in range(1, len(values)):
+        out.append(values[i] * k + out[-1] * (1 - k))
+    return out
+
 
 # ─── Data fetchers ───────────────────────────────────────────────────────────
 
@@ -133,14 +142,21 @@ def fetch_fii_history(rows=120):
 
 # ─── Signal compute (mirrors marketMood.ts) ──────────────────────────────────
 
-def compute_trend(nifty_closes):
-    if not nifty_closes or len(nifty_closes) < 125: return None
-    last125 = nifty_closes[-125:]
-    mean = sum(last125) / 125
-    sd = stdev(last125)
-    if sd == 0: return 50.0
-    z = (nifty_closes[-1] - mean) / sd
-    return linear_map(z, -2, 2)
+def compute_momentum(nifty_closes):
+    """
+    Tickertape MMI 'Momentum' factor:
+      momentum = (30d EMA - 90d EMA) / 90d EMA
+    EMA crossover is the canonical Indian-markets momentum measure.
+    Maps ±5% to 0/100.
+    """
+    if not nifty_closes or len(nifty_closes) < 95: return None
+    ema30 = ema(nifty_closes, 30)
+    ema90 = ema(nifty_closes, 90)
+    e30 = ema30[-1]
+    e90 = ema90[-1]
+    if e90 == 0: return 50.0
+    momentum = (e30 - e90) / e90
+    return linear_map(momentum, -0.05, 0.05)
 
 
 def compute_breadth_dma(breadth_row):
@@ -158,9 +174,17 @@ def compute_breadth_hl(breadth_row):
 
 
 def compute_vix(vix_live, vix_history):
-    if vix_live is None or not vix_history or len(vix_history) < 60: return None
-    p = percentile(vix_live, vix_history)
-    return clamp100(100 - p)
+    """
+    Absolute India VIX level (not 1y percentile) is how analysts actually read it:
+      VIX <= 12: extreme greed (score 100)
+      VIX >= 30: extreme fear   (score 0)
+      Linear between.
+    Percentile-based was misleading — a calm year (range 9-14) makes VIX 17
+    look extreme when in absolute terms 17 is moderate.
+    History param kept for backward compat / future relative blend, currently unused.
+    """
+    if vix_live is None: return None
+    return linear_map(vix_live, 30, 12)
 
 
 def compute_pcr(pcr):
@@ -236,7 +260,7 @@ def main():
         nifty_for_haven = nifty_yahoo or []
 
     signals = {
-        "trend":       compute_trend(nifty_for_trend),
+        "momentum":    compute_momentum(nifty_for_trend),
         "breadth_dma": compute_breadth_dma(breadth),
         "breadth_hl":  compute_breadth_hl(breadth),
         "volatility":  compute_vix(vix_live, vix_closes or []),

@@ -1,26 +1,27 @@
 """
 daily_ohlcv_cron.py
 ===================
-DAILY cron — refreshes 5-year daily OHLCV for every stock in stock_master.
-Runs via GitHub Actions at 4 PM IST (after market close).
+DAILY cron - refreshes 5-year daily OHLCV for every stock in stock_master.
+Runs via GitHub Actions at 5 PM IST (after market close).
 
-Source: yfinance (Yahoo Finance, free, rate-limited)
-Output: Updates {SYMBOL}.json in Supabase Storage bucket 'daily'
+Source: Yahoo Finance Chart API DIRECT (no yfinance lib).
+  - yfinance was getting blocked by Yahoo on GitHub Actions runners
+    ("Expecting value: line 1 column 1 (char 0)" silent failures since ~March 2026).
+  - The Chart endpoint we use here works (same one our app uses successfully).
 
-Strategy: For each symbol, fetch 5y daily history fresh (overwrite entire JSON).
-Simpler than diff/append and ensures no gaps from missed days.
+Output: Updates {SYMBOL}.json in Supabase Storage bucket 'daily'.
+Same JSON shape as before: { symbol, interval, from, to, bars: [[date, o, h, l, c, v], ...] }
 
-Rate: 1.5s sleep between calls + 30s pause every 50 stocks.
-~6-7 min runtime for 200 stocks.
+Rate: 1.0s sleep between calls. ~3-4 min for 200 stocks.
 """
 
 import os
 import sys
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
-import yfinance as yf
+import requests
 from supabase import create_client
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -28,10 +29,22 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 BUCKET = "daily"
-SLEEP_BETWEEN = 1.5
-BATCH_BREAK = 30
+SLEEP_BETWEEN = 1.0
+BATCH_BREAK = 15
 BATCH_SIZE = 50
-YEARS_BACK = 5
+
+YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# IST = UTC+5:30
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def fetch_symbols(limit: int = 200) -> list[str]:
@@ -47,27 +60,47 @@ def fetch_symbols(limit: int = 200) -> list[str]:
 
 
 def fetch_ohlcv(symbol: str) -> dict | None:
-    """Pull 5y daily from yfinance, format as compact JSON bundle."""
+    """Pull 5y daily from Yahoo Chart API. Returns compact bundle or None."""
+    url = f"{YAHOO_BASE}/{symbol}.NS"
+    params = {"interval": "1d", "range": "5y"}
     try:
-        ticker = yf.Ticker(f"{symbol}.NS")
-        hist = ticker.history(period=f"{YEARS_BACK}y", interval="1d")
-        if hist.empty:
+        r = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        if r.status_code != 200:
+            print(f"[WARN] {symbol}: HTTP {r.status_code}", file=sys.stderr)
+            return None
+        payload = r.json()
+        result = (payload.get("chart", {}).get("result") or [None])[0]
+        if not result:
             return None
 
-        # Normalize index to tz-naive
-        if hist.index.tz is not None:
-            hist.index = hist.index.tz_localize(None)
+        timestamps = result.get("timestamp") or []
+        quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+        opens = quote.get("open") or []
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
+        closes = quote.get("close") or []
+        vols = quote.get("volume") or []
+
+        if not timestamps:
+            return None
 
         bars = []
-        for ts, row in hist.iterrows():
+        for i, ts in enumerate(timestamps):
+            # Skip any partial / null bar
+            if i >= len(closes) or closes[i] is None:
+                continue
+            d = datetime.fromtimestamp(ts, tz=IST).strftime("%Y-%m-%d")
             bars.append([
-                ts.strftime("%Y-%m-%d"),
-                round(float(row["Open"]), 2),
-                round(float(row["High"]), 2),
-                round(float(row["Low"]), 2),
-                round(float(row["Close"]), 2),
-                int(row["Volume"]) if row["Volume"] > 0 else 0,
+                d,
+                round(float(opens[i]), 2) if opens[i] is not None else None,
+                round(float(highs[i]), 2) if highs[i] is not None else None,
+                round(float(lows[i]), 2) if lows[i] is not None else None,
+                round(float(closes[i]), 2),
+                int(vols[i]) if vols[i] not in (None, 0) else 0,
             ])
+
+        if not bars:
+            return None
 
         return {
             "symbol": symbol,
@@ -106,6 +139,9 @@ def main():
         bundle = fetch_ohlcv(sym)
         if bundle and upload(sym, bundle):
             ok += 1
+            if i <= 3 or i % 25 == 0:
+                # Periodic sanity log so we can spot regressions in run output.
+                print(f"[OK] {sym}: {len(bundle['bars'])} bars, last {bundle['to']}")
         else:
             failed.append(sym)
 
@@ -114,7 +150,7 @@ def main():
             print(f"[INFO] {i}/{len(symbols)} · ok={ok} failed={len(failed)} · sleeping {BATCH_BREAK}s")
             time.sleep(BATCH_BREAK)
 
-    print(f"[OK] {datetime.now().isoformat()} · refreshed={ok}/{len(symbols)} failed={len(failed)}")
+    print(f"[OK] {datetime.now(IST).isoformat()} · refreshed={ok}/{len(symbols)} failed={len(failed)}")
     if failed:
         print(f"[FAIL] {failed[:20]}{'...' if len(failed) > 20 else ''}")
 

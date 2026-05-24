@@ -1,0 +1,30 @@
+name: Market Breadth Daily
+
+on:
+  schedule:
+    # Daily 12:00 UTC = 5:30 PM IST. Runs ~30 min after daily-ohlcv-cron so
+    # the Storage JSONs are guaranteed fresh.
+    - cron: '0 12 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compute breadth
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python breadth_cron.py

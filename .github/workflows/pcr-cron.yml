@@ -1,0 +1,31 @@
+name: NIFTY PCR Refresh
+
+on:
+  # Every 10 min between 9:15-15:30 IST (3:45-10:00 UTC), Mon-Fri.
+  # Matches the intraday-cron schedule so PCR + intraday move together.
+  schedule:
+    - cron: '*/10 4-9 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch NIFTY option chain + compute PCR
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SKIP_MARKET_CHECK: '0'
+        run: python pcr_cron.py

@@ -48,12 +48,10 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-# XBRL namespace
-NS = {
-    "shp": "http://www.bseindia.com/xbrl/fin/2018-03-31/in-bse-shp",
-    "xbrli": "http://www.xbrl.org/2003/instance",
-    "xbrldi": "http://xbrl.org/2006/xbrldi",
-}
+# XBRL namespaces. The shp namespace URI changes per SEBI taxonomy version
+# (e.g. 2018-03-31, 2025-10-31). Auto-detect from the root tag.
+XBRLI_NS = "http://www.xbrl.org/2003/instance"
+XBRLDI_NS = "http://xbrl.org/2006/xbrldi"
 
 # Map NSE XBRL category members to our compact categories
 CATEGORY_MAP = {
@@ -158,13 +156,29 @@ def parse_xbrl(xbrl_bytes: bytes) -> dict | None:
         print(f"[shp] xbrl parse error: {e}", file=sys.stderr)
         return None
 
+    # Auto-detect the shp namespace URI from xmlns declarations
+    # (it changes per SEBI taxonomy revision)
+    shp_ns = None
+    for k, v in root.attrib.items():
+        if "in-bse-shp" in k or "shp" in v.lower():
+            if "in-bse-shp" in v and "types" not in v:
+                shp_ns = v
+                break
+    # Fallback: walk children if root attribs don't help (some XMLs strip xmlns)
+    if not shp_ns:
+        for el in root.iter():
+            if el.tag.startswith("{") and "in-bse-shp" in el.tag and "types" not in el.tag:
+                shp_ns = el.tag.split("}")[0].lstrip("{")
+                break
+    if not shp_ns:
+        print("[shp] could not detect shp namespace", file=sys.stderr)
+        return None
+
     # Build context -> category-member map
     ctx_to_member: dict[str, str] = {}
-    for ctx in root.findall(".//xbrli:context", NS):
+    for ctx in root.iter("{%s}context" % XBRLI_NS):
         ctx_id = ctx.attrib.get("id")
-        members = ctx.findall(".//xbrldi:explicitMember", NS)
-        # Find the CategoryOfShareholdersAxis member
-        for m in members:
+        for m in ctx.iter("{%s}explicitMember" % XBRLDI_NS):
             dim = m.attrib.get("dimension", "")
             if "CategoryOfShareholdersAxis" in dim:
                 txt = (m.text or "").strip()
@@ -173,16 +187,11 @@ def parse_xbrl(xbrl_bytes: bytes) -> dict | None:
                 ctx_to_member[ctx_id] = txt
                 break
 
-    # For each NameOfTheShareholder, find its context + matching shares + pct
-    name_tag = "{%s}NameOfTheShareholder" % NS["shp"]
-    shares_tag = "{%s}NumberOfSharesHeld" % NS["shp"]
-    # PCT tag varies — try a few common ones from SEBI XBRL spec
     pct_tag_candidates = [
         "ShareholdingAsAPercentageOfTotalNumberOfSharesAsAPercentageOfABPlusCPlusD",
         "ShareholdingAsAPercentageOfTotalNumberOfShares",
         "EquityShareCapitalHeldByThePromoterAsAPercentageOfTotalEquityShareCapitalOfTheCompany",
     ]
-    pan_tag = "{%s}PermanentAccountNumberOfShareholder" % NS["shp"]
 
     # Group all elements by contextRef
     by_ctx: dict[str, dict] = {}

@@ -242,6 +242,10 @@ def parse_xbrl(xbrl_bytes: bytes) -> dict | None:
         tag_local = el.tag.split("}", 1)[-1] if "}" in el.tag else el.tag
         by_ctx.setdefault(ctx_ref, {})[tag_local] = (el.text or "").strip()
 
+    # SEBI XBRL pairs each holder across TWO contexts:
+    #   D_<Cat>_Context<N> -> identity (name + PAN)
+    #   <Cat>_Context<N>   -> quantitative (NumberOfShares, ShareholdingAsAPct)
+    # We pair by stripping the "D_" prefix from the identity context.
     holders = []
     for ctx_ref, fields in by_ctx.items():
         name = fields.get("NameOfTheShareholder")
@@ -249,14 +253,26 @@ def parse_xbrl(xbrl_bytes: bytes) -> dict | None:
         member = ctx_to_member.get(ctx_ref)
         if not member: continue
         category = CATEGORY_MAP.get(member, member.replace("Member", "").lower())
-        shares = to_int(fields.get("NumberOfSharesHeld"))
-        # Try pct candidates
-        pct = None
-        for cand in pct_tag_candidates:
-            if cand in fields:
-                pct = to_num(fields[cand])
-                if pct is not None: break
+
+        # Locate paired instant-context for shares + pct
+        if ctx_ref.startswith("D_"):
+            instant_ref = ctx_ref[2:]   # strip 'D_'
+        else:
+            instant_ref = ctx_ref
+        instant_fields = by_ctx.get(instant_ref, {})
+
+        shares = to_int(
+            instant_fields.get("NumberOfShares")
+            or instant_fields.get("NumberOfFullyPaidUpEquityShares")
+        )
+        # Pct is stored as decimal proportion (0.1113 = 11.13%). Convert to percentage.
+        pct_raw = to_num(instant_fields.get("ShareholdingAsAPercentageOfTotalNumberOfShares"))
+        pct = pct_raw * 100 if pct_raw is not None else None
         pan = (fields.get("PermanentAccountNumberOfShareholder") or "").strip() or None
+        # Filter out masked / placeholder PANs like '******'
+        if pan and set(pan) <= {"*"}:
+            pan = None
+
         holders.append({
             "category": category,
             "holder_name": name,

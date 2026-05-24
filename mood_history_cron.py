@@ -115,6 +115,7 @@ def fetch_latest_pcr():
 
 
 def fetch_fii_history(rows=120):
+    """Returns list of (date_iso, net_value) tuples, oldest -> newest."""
     res = (
         sb.table("fii_dii_flows")
         .select("date,net_value_cr,category")
@@ -127,7 +128,7 @@ def fetch_fii_history(rows=120):
     for r in (res.data or []):
         if r["net_value_cr"] is None: continue
         by_date[r["date"]] = by_date.get(r["date"], 0) + float(r["net_value_cr"])
-    return [by_date[d] for d in sorted(by_date.keys())]
+    return [(d, by_date[d]) for d in sorted(by_date.keys())]
 
 
 # ─── Signal compute (mirrors marketMood.ts) ──────────────────────────────────
@@ -168,9 +169,27 @@ def compute_pcr(pcr):
 
 
 def compute_fii(fii_history):
+    """
+    fii_history: list of (date_iso, net_value) tuples, oldest -> newest.
+    Requires 95 CONSECUTIVE-ish trading days (within ~140 calendar days)
+    for the 5d-rolling vs 90d-percentile compute to be statistically valid.
+    Returns None if data is insufficient or has gaps - better than wrong score.
+    """
     if not fii_history or len(fii_history) < 95: return None
-    last5sum = sum(fii_history[-5:])
-    hist = fii_history[:-5]
+    # Gap check - last 95 rows should span no more than 140 calendar days
+    last95 = fii_history[-95:]
+    try:
+        first_dt = datetime.strptime(last95[0][0], "%Y-%m-%d")
+        last_dt = datetime.strptime(last95[-1][0], "%Y-%m-%d")
+        span_days = (last_dt - first_dt).days
+        if span_days > 140:
+            print(f"[mood] fii gap detected: 95 rows span {span_days} cal days, expected <= 140")
+            return None
+    except Exception:
+        return None
+    values = [v for _, v in last95]
+    last5sum = sum(values[-5:])
+    hist = values[:-5]
     windows = []
     for i in range(4, len(hist)):
         windows.append(sum(hist[i - 4:i + 1]))

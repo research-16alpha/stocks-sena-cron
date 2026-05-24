@@ -1,0 +1,30 @@
+name: Market Mood Daily Snapshot
+
+on:
+  schedule:
+    # 13:30 UTC = 7:00 PM IST. Runs after all upstream data:
+    # daily_ohlcv (5 PM), breadth (5:30 PM), returns (5:45 PM), fii_dii (6:15 PM).
+    - cron: '30 13 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compute + snapshot mood
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python mood_history_cron.py

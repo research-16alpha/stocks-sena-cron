@@ -1,0 +1,36 @@
+name: Shareholding Pattern Scraper
+
+on:
+  schedule:
+    # Daily 14:30 UTC = 8:00 PM IST. Only fetches XBRL if NSE has a newer
+    # filing than what's stored, so most days does ~10-20 stocks max.
+    - cron: '30 14 * * *'
+  workflow_dispatch:
+    inputs:
+      only_symbol:
+        description: 'Run for one symbol only (testing)'
+        required: false
+        default: ''
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scrape NSE shareholding patterns + parse XBRL
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ONLY_SYMBOL: ${{ inputs.only_symbol }}
+        run: python shareholding_scraper.py

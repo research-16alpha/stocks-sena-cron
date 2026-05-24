@@ -1,0 +1,29 @@
+name: Returns Compute Daily
+
+on:
+  schedule:
+    # 12:15 UTC = 5:45 PM IST. Runs ~45 min after daily-ohlcv-cron so closes are fresh.
+    - cron: '15 12 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compute returns from daily Storage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python returns_cron.py

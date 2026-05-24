@@ -1,0 +1,29 @@
+name: Bulk + Block Deals Scraper
+
+on:
+  schedule:
+    # Daily 13:00 UTC = 6:30 PM IST. NSE publishes EOD bulk/block ~5:30-6 PM IST.
+    - cron: '0 13 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scrape NSE bulk + block deals
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bulk_deals_scraper.py

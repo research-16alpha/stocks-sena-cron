@@ -1,162 +1,194 @@
 """
-FII/DII Flow + Block/Bulk Deals Seed
-======================================
-Seeds last 30 days of realistic FII/DII flows + sample block deals.
-Real scraper would pull from NSE EOD daily report.
+fii_dii_scraper.py
+==================
+DAILY cron - scrapes NSE's published FII + DII daily cash flows.
+Runs once a day at 6 PM IST (after NSE publishes EOD report ~5:30 PM).
+
+Source: https://www.nseindia.com/api/fiidiiTradeReact
+  - Public JSON endpoint
+  - Same cookie warm-up pattern as pcr_cron / earnings_scraper
+  - Returns most recent trading day for FII/FPI + DII (cash segment)
+
+Output: upsert to public.fii_dii_flows on (date, category, segment).
+Powers: Home FII/DII widget + Mood Index "Smart Money Flow" signal.
+
+NOTE: replaces the deleted fake `fii_dii_scraper.py` that was using
+random.seed(42) to generate flows. ALL DATA HERE IS REAL.
 """
 
 import os
-import random
-from datetime import datetime, timedelta
+import re
+import sys
+import time
+from datetime import datetime
+
+import requests
 from supabase import create_client
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+NSE_HOME = "https://www.nseindia.com"
+NSE_FII_DII_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nseindia.com/reports/fii-dii",
+    "Connection": "keep-alive",
+}
 
 
-def seed_fii_dii():
-    """Seed last 30 trading days of FII/DII flows."""
-    random.seed(42)
-    today = datetime.now()
-    records = []
+def warm_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    s.get(NSE_HOME, timeout=10)
+    time.sleep(1)
+    s.get("https://www.nseindia.com/reports/fii-dii", timeout=10)
+    time.sleep(1)
+    return s
 
-    for days_ago in range(30):
-        d = today - timedelta(days=days_ago)
-        if d.weekday() >= 5:  # skip weekends
+
+def fetch(session: requests.Session, retries: int = 3) -> list | None:
+    for attempt in range(retries):
+        try:
+            r = session.get(NSE_FII_DII_URL, timeout=20)
+            if r.status_code == 200:
+                data = r.json()
+                # Endpoint sometimes wraps in {"data": [...]} or returns raw list
+                if isinstance(data, dict) and "data" in data:
+                    return data["data"]
+                return data
+            print(f"[fiidii] NSE HTTP {r.status_code} attempt {attempt + 1}", file=sys.stderr)
+        except Exception as e:
+            print(f"[fiidii] fetch error: {e}", file=sys.stderr)
+        time.sleep(2 + attempt * 2)
+    return None
+
+
+# NSE returns category like "FII **", "FII/FPI **", "DII **" - strip noise.
+CATEGORY_FII_RE = re.compile(r"\b(fii|fpi)\b", re.I)
+CATEGORY_DII_RE = re.compile(r"\bdii\b", re.I)
+
+
+def normalize_category(raw: str) -> str | None:
+    if not raw:
+        return None
+    r = raw.strip()
+    if CATEGORY_FII_RE.search(r):
+        return "FII/FPI"
+    if CATEGORY_DII_RE.search(r):
+        return "DII"
+    return None
+
+
+def parse_date(s: str) -> str | None:
+    if not s:
+        return None
+    s = s.strip()
+    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
             continue
+    return None
 
-        # Realistic ranges
-        fii_buy = round(random.uniform(8000, 16000), 0)
-        fii_sell = round(random.uniform(7000, 15000), 0)
-        dii_buy = round(random.uniform(6000, 12000), 0)
-        dii_sell = round(random.uniform(5500, 11500), 0)
 
-        records.append({
-            "trade_date": d.strftime("%Y-%m-%d"),
-            "fii_buy_cr": fii_buy,
-            "fii_sell_cr": fii_sell,
-            "fii_net_cr": fii_buy - fii_sell,
-            "dii_buy_cr": dii_buy,
-            "dii_sell_cr": dii_sell,
-            "dii_net_cr": dii_buy - dii_sell,
+def to_num(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def normalize(rows: list) -> list[dict]:
+    """NSE row keys vary - tolerate common variants."""
+    out = []
+    seen: set[tuple] = set()
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        cat_raw = (
+            r.get("category")
+            or r.get("Category")
+            or r.get("type")
+            or ""
+        )
+        category = normalize_category(cat_raw)
+        if not category:
+            continue
+        date_raw = (
+            r.get("date")
+            or r.get("reportDate")
+            or r.get("trade_date")
+            or ""
+        )
+        iso_date = parse_date(date_raw)
+        if not iso_date:
+            continue
+        buy = to_num(r.get("buyValue") or r.get("buy_value") or r.get("buyAmount"))
+        sell = to_num(r.get("sellValue") or r.get("sell_value") or r.get("sellAmount"))
+        net = to_num(r.get("netValue") or r.get("net_value") or r.get("netAmount"))
+        if net is None and buy is not None and sell is not None:
+            net = round(buy - sell, 2)
+        # Segment - default to 'Equity' if not specified (most common in NSE feed)
+        seg = (
+            r.get("segment")
+            or r.get("Segment")
+            or "Equity"
+        ).strip() or "Equity"
+
+        key = (iso_date, category, seg)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "date": iso_date,
+            "category": category,
+            "segment": seg,
+            "buy_value_cr": buy,
+            "sell_value_cr": sell,
+            "net_value_cr": net,
         })
-
-    for r in records:
-        try:
-            supabase.table("fii_dii").upsert(r, on_conflict="trade_date").execute()
-        except Exception as e:
-            print(f"[WARN] FII/DII insert failed for {r['trade_date']}: {e}")
-
-    print(f"[OK] Seeded {len(records)} days of FII/DII flows")
+    return out
 
 
-def seed_block_deals():
-    """Seed last 7 days of sample block deals."""
-    SAMPLE_DEALS = [
-        ("HDFCBANK", "DSP Mutual Fund", "ICICI Prudential MF", 250000, 1648.50),
-        ("RELIANCE", "Norges Bank Investment", "Mirae Asset", 180000, 2890.00),
-        ("TCS", "Vanguard Total Stock", "BlackRock India", 95000, 3895.00),
-        ("INFY", "Government Pension Fund Global", "HDFC AMC", 320000, 1845.00),
-        ("ICICIBANK", "Capital Group", "Axis Mutual Fund", 280000, 1149.00),
-        ("ADANIGREEN", "Promoter Entity", "Public", 210000, 1242.00),
-        ("BHARTIARTL", "Goldman Sachs", "JP Morgan", 145000, 1680.00),
-        ("SBIN", "LIC of India", "BNP Paribas", 350000, 832.00),
-    ]
+def main():
+    session = warm_session()
+    rows = fetch(session)
+    if rows is None:
+        print("[fiidii] failed to fetch NSE FII/DII data")
+        sys.exit(1)
 
-    today = datetime.now()
-    for i, (sym, buyer, seller, qty, price) in enumerate(SAMPLE_DEALS):
-        d = today - timedelta(days=i % 7)
-        if d.weekday() >= 5:
-            d -= timedelta(days=2)
-        try:
-            supabase.table("block_deals").insert({
-                "symbol": sym,
-                "trade_date": d.strftime("%Y-%m-%d"),
-                "buyer": buyer,
-                "seller": seller,
-                "quantity": qty,
-                "price": price,
-                "value_cr": (qty * price) / 1e7,
-            }).execute()
-        except Exception as e:
-            print(f"[WARN] Block deal insert failed for {sym}: {e}")
+    print(f"[fiidii] NSE returned {len(rows)} raw rows")
+    if len(rows) == 0:
+        print("[fiidii] empty payload - nothing to upsert")
+        return
 
-    print(f"[OK] Seeded {len(SAMPLE_DEALS)} block deals")
+    normalized = normalize(rows)
+    if not normalized:
+        print("[fiidii] no usable rows after normalization. Sample raw:", rows[:2], file=sys.stderr)
+        sys.exit(1)
 
-
-def seed_promoter_actions():
-    """Seed realistic recent promoter actions until BSE scraper works."""
-    SAMPLE = [
-        ("ADANIGREEN", "Adani Green Energy", "sale", "Promoter sold 2,10,000 shares (₹47 Cr) at avg ₹1,242. Holding: 67.3% (was 67.9%).", 4),
-        ("TATASTEEL", "Tata Steel", "auditor_change", "Auditor change: BSR & Co LLP replaces Deloitte. Effective FY27.", 2),
-        ("YESBANK", "Yes Bank", "pledge_increase", "Promoter pledge increased 2.3% to 67.8%. 4th increase in 6 months.", 3),
-        ("HDFCLIFE", "HDFC Life Insurance", "purchase", "CEO Vibha Padalkar bought 50,000 shares (₹3.4 Cr) on open market.", 3),
-        ("SBIN", "State Bank of India", "rpt_disclosed", "RPT of ₹128 Cr with SBI Capital Markets disclosed in Q4 FY26.", 2),
-        ("ICICIBANK", "ICICI Bank", "purchase", "ED Sandeep Bakhshi bought 25,000 shares at ₹1,148 average.", 3),
-        ("ZEEL", "Zee Entertainment", "pledge_increase", "Subhash Chandra pledge increased to 95.5% of holding.", 4),
-        ("RELIANCE", "Reliance Industries", "rpt_disclosed", "RPT of ₹4,200 Cr with Reliance Jio Infocomm.", 2),
-    ]
-
-    today = datetime.now()
-    for i, (sym, name, action_type, desc, sev) in enumerate(SAMPLE):
-        filing_date = (today - timedelta(hours=i * 4)).isoformat()
-        try:
-            supabase.table("promoter_actions").insert({
-                "symbol": sym,
-                "company_name": name,
-                "action_type": action_type,
-                "action_description": desc,
-                "severity": sev,
-                "filing_date": filing_date,
-                "source_url": f"https://www.bseindia.com/corporates/anndet_new.aspx?scrip={sym}",
-            }).execute()
-        except Exception as e:
-            print(f"[WARN] Promoter action insert failed for {sym}: {e}")
-
-    print(f"[OK] Seeded {len(SAMPLE)} promoter actions")
-
-
-def seed_insider_trades():
-    """Seed insider trades for stock detail pages."""
-    SAMPLE = [
-        ("HDFCBANK", "Vibha Padalkar", "CEO", "buy", 50000, 1651.00),
-        ("HDFCBANK", "Sashidhar Jagdishan", "MD", "buy", 25000, 1648.50),
-        ("TCS", "K Krithivasan", "CEO", "sell", 12000, 3890.00),
-        ("INFY", "Salil Parekh", "CEO", "buy", 8000, 1845.50),
-        ("RELIANCE", "Mukesh Ambani", "Chairman", "sell", 0, 2890.00),  # exempt disclosure
-        ("ADANIGREEN", "Gautam Adani", "Chairman", "sell", 210000, 1242.00),
-        ("ICICIBANK", "Sandeep Bakhshi", "MD CEO", "buy", 25000, 1148.00),
-    ]
-
-    today = datetime.now()
-    for i, (sym, name, role, ttype, qty, price) in enumerate(SAMPLE):
-        d = today - timedelta(days=i * 2)
-        try:
-            supabase.table("insider_trades").insert({
-                "symbol": sym,
-                "insider_name": name,
-                "insider_role": role,
-                "trade_type": ttype,
-                "quantity": qty,
-                "avg_price": price,
-                "value_cr": (qty * price) / 1e7 if qty else 0,
-                "trade_date": d.strftime("%Y-%m-%d"),
-                "filed_date": d.strftime("%Y-%m-%d"),
-            }).execute()
-        except Exception as e:
-            print(f"[WARN] Insider trade insert failed for {sym}: {e}")
-
-    print(f"[OK] Seeded {len(SAMPLE)} insider trades")
+    try:
+        sb.table("fii_dii_flows").upsert(
+            normalized, on_conflict="date,category,segment"
+        ).execute()
+        print(f"[fiidii] {datetime.now().isoformat()} · upserted {len(normalized)} rows")
+        for r in normalized:
+            print(f"  {r['date']} {r['category']:<8} {r['segment']:<8} "
+                  f"buy={r['buy_value_cr']} sell={r['sell_value_cr']} net={r['net_value_cr']}")
+    except Exception as e:
+        print(f"[fiidii] upsert failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    print("=== Seeding FII/DII flows ===")
-    seed_fii_dii()
-    print("\n=== Seeding block deals ===")
-    seed_block_deals()
-    print("\n=== Seeding promoter actions ===")
-    seed_promoter_actions()
-    print("\n=== Seeding insider trades ===")
-    seed_insider_trades()
-    print("\n[DONE]")
+    main()

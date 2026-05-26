@@ -1,14 +1,17 @@
-name: Stock Master Scraper
+name: Stock Master Scraper (deprecated - manual only)
 
+# DEPRECATED: this scraper uses yfinance which is rate-limited and times out
+# the 25-min GitHub Actions slot for 4,500 stocks (only ~200-300 complete).
+# Replaced by daily-snapshot-refresh.yml which uses Yahoo v8 chart API and
+# pushes price/mcap/PE/PB back to stock_master via sync_snapshot_to_stock_master.py.
+# Kept here for manual one-off backfills (e.g. when a new field is added).
 on:
-  schedule:
-    - cron: '0 20 * * 0'  # Sunday 8 PM UTC = Monday 1:30 AM IST
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

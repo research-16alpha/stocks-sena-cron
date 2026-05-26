@@ -1,0 +1,51 @@
+name: Filings Metadata Backfill (one-shot historical)
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: 'Years of concall transcripts to scan back'
+        required: true
+        default: '10'
+      skip_ar:
+        description: 'Skip annual reports (just do concall)?'
+        required: false
+        default: 'false'
+
+jobs:
+  ar-historical:
+    if: ${{ github.event.inputs.skip_ar != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Full AR backfill (NSE returns ~16 years per stock in one call)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python backfill_annual_reports.py
+
+  concall-historical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Concall transcripts backfill — max lookback
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python backfill_concall_transcripts.py --years ${{ github.event.inputs.years }}

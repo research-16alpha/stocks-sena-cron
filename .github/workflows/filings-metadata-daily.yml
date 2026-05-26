@@ -1,0 +1,50 @@
+name: Filings Metadata Daily (AR + Concall)
+
+on:
+  schedule:
+    # Daily 10:30 UTC = 4:00 PM IST (after market close + most evening filings)
+    - cron: '30 10 * * *'
+  workflow_dispatch:
+
+jobs:
+  ar-metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh annual_reports metadata from NSE
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python backfill_annual_reports.py
+
+  concall-metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh concall transcripts (last 60 days window)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python backfill_concall_transcripts.py --years 0 --from-date $(date -u -d "60 days ago" +%Y%m%d) --to-date $(date -u +%Y%m%d)

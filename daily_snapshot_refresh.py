@@ -87,11 +87,10 @@ def fetch_v2_symbols() -> list:
     return syms
 
 
-def fetch_quote_v8(symbol: str) -> dict:
-    """Get current price + 52w range + prev close from v8 chart API.
-    Returns {} on failure."""
+def _fetch_quote_single(yahoo_sym: str) -> dict:
+    """Call Yahoo v8 chart API for one ticker form. Returns {} on failure."""
     try:
-        r = requests.get(f'{YAHOO_CHART}/{symbol}.NS',
+        r = requests.get(f'{YAHOO_CHART}/{yahoo_sym}',
                          params={'interval': '1d', 'range': '1d'},
                          headers=YAHOO_HEADERS, timeout=15)
         if r.status_code != 200:
@@ -100,6 +99,8 @@ def fetch_quote_v8(symbol: str) -> dict:
         if not meta:
             return {}
         current = meta.get('regularMarketPrice')
+        if current is None:
+            return {}
         prev = meta.get('chartPreviousClose') or meta.get('previousClose')
         day_change = None
         day_change_pct = None
@@ -115,9 +116,34 @@ def fetch_quote_v8(symbol: str) -> dict:
             'week52_low': meta.get('fiftyTwoWeekLow'),
             'long_name': meta.get('longName'),
             'currency': meta.get('currency'),
+            '_ticker_used': yahoo_sym,
         }
     except Exception:
         return {}
+
+
+def fetch_quote_v8(symbol: str) -> dict:
+    """Get current price with fallback chain:
+      1. .NS suffix (NSE-listed, default)
+      2. .BO suffix (BSE-listed by symbol, e.g. BLUESTARCO.BO)
+      3. Numeric scrip code + .BO (BSE-only stocks named like BSE500013 → 500013.BO)
+      4. Bare symbol (indices, FX)
+    """
+    # 1. NSE
+    q = _fetch_quote_single(f'{symbol}.NS')
+    if q: return q
+    # 2. BSE by symbol
+    q = _fetch_quote_single(f'{symbol}.BO')
+    if q: return q
+    # 3. BSE by numeric scrip code (for symbols like BSE500013, BSE_501242)
+    import re
+    m = re.match(r'^BSE_?(\d+)$', symbol)
+    if m:
+        q = _fetch_quote_single(f'{m.group(1)}.BO')
+        if q: return q
+    # 4. Bare symbol (indices, FX)
+    q = _fetch_quote_single(symbol)
+    return q
 
 
 def compute_derived(price: float, bundle: dict) -> dict:

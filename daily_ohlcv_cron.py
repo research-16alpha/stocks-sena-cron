@@ -47,16 +47,28 @@ HEADERS = {
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def fetch_symbols(limit: int = 200) -> list[str]:
-    """Top symbols by market_cap_cr from stock_master."""
-    res = (
-        sb.table("stock_master")
-        .select("symbol")
-        .order("market_cap_cr", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    return [r["symbol"] for r in (res.data or [])]
+def fetch_symbols(limit: int = 0) -> list[str]:
+    """All symbols from stock_master. Default: no limit (= full universe).
+    Yahoo will gracefully 404 on stocks that aren't on its system."""
+    syms = []
+    offset = 0
+    while True:
+        q = sb.table("stock_master").select("symbol").order("market_cap_cr", desc=True, nullsfirst=False)
+        q = q.range(offset, offset + 999)
+        res = q.execute()
+        batch = res.data or []
+        if not batch:
+            break
+        syms.extend(r["symbol"] for r in batch if r.get("symbol"))
+        if len(batch) < 1000:
+            break
+        offset += 1000
+        if limit and len(syms) >= limit:
+            syms = syms[:limit]
+            break
+    # Skip BSE_<scrip> fallbacks - Yahoo won't have them
+    syms = [s for s in syms if not s.startswith('BSE_')]
+    return syms
 
 
 def fetch_ohlcv(symbol: str) -> dict | None:
@@ -129,7 +141,9 @@ def upload(symbol: str, bundle: dict) -> bool:
 
 
 def main():
-    symbols = fetch_symbols(200)
+    # Default: full universe. Override via env LIMIT=200 to restrict.
+    limit = int(os.environ.get("LIMIT", "0"))
+    symbols = fetch_symbols(limit)
     print(f"[INFO] Daily OHLCV refresh -> bucket '{BUCKET}' · {len(symbols)} stocks")
 
     ok = 0

@@ -1,0 +1,41 @@
+name: BSE Delta Filings (daily)
+
+on:
+  schedule:
+    # Daily 8:00 UTC = 1:30 PM IST (after most BSE filings up to ~12 PM IST)
+    - cron: '0 8 * * *'
+    # Evening 14:00 UTC = 7:30 PM IST (after post-close filings)
+    - cron: '0 14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch new corp announcements (NSE + BSE) since last run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FILINGS_DIR: /tmp/filings
+        run: |
+          mkdir -p /tmp/filings
+          python fetch_new_filings.py --hours 30
+
+      - name: Apply new filings (parse XBRL + merge into bundles)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FILINGS_DIR: /tmp/filings
+        run: python apply_new_filings.py

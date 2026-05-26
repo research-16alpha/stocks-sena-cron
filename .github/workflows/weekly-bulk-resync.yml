@@ -1,0 +1,45 @@
+name: Weekly Bulk Re-sync (safety net)
+
+on:
+  schedule:
+    # Sunday 4:00 UTC = 9:30 AM IST — catches any filings the daily delta missed
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+jobs:
+  resync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull filings for last 7 days (overlap window)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FILINGS_DIR: /tmp/filings
+        run: |
+          mkdir -p /tmp/filings
+          python fetch_new_filings.py --hours 168
+
+      - name: Apply (parse + merge any missed XBRL into bundles)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FILINGS_DIR: /tmp/filings
+        run: python apply_new_filings.py
+
+      - name: Force-refresh NSE quarterly across all stocks (overwrite mode)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python nse_delta_quarterly.py --force

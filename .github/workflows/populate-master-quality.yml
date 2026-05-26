@@ -1,0 +1,29 @@
+name: Populate stock_master Quality + Bank Metrics
+
+on:
+  schedule:
+    # Daily 9:00 UTC = 2:30 PM IST (after NSE delta runs Tue/Thu/Sat at 8 UTC)
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  populate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Populate quality + bank metrics columns in stock_master
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python populate_bank_master.py

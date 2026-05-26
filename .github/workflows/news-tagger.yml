@@ -1,0 +1,31 @@
+name: News Tagger (link news to stocks)
+
+on:
+  schedule:
+    # Every 2 hours during market hours so fresh news gets tagged fast
+    - cron: '5 4,6,8,10,12,14 * * 1-5'
+    # Weekends: once at 8 AM IST
+    - cron: '30 2 * * 0,6'
+  workflow_dispatch:
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Tag untagged news items
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python tag_news_items.py

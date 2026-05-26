@@ -42,7 +42,7 @@ with open('e:/Stocks sena/.supabase-service-key', 'r') as f:
 URL = 'https://tbeadvvkqyrhtendttrg.supabase.co'
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
-FILINGS_DIR = r'F:\expansion\stocks-sena\filings'
+FILINGS_DIR = os.environ.get('FILINGS_DIR', r'F:\expansion\stocks-sena\filings')
 APPLIED_LOG = os.path.join(FILINGS_DIR, '_applied.json')
 BUCKET      = 'fundamentals-v2'
 BUCKET_BAK  = 'fundamentals-v2-backups'
@@ -60,13 +60,34 @@ def latest_filings_file() -> Optional[str]:
 
 
 def load_scrip_to_symbol() -> Dict[str, str]:
-    """Load the BSE_SCRIP -> NSE_SYMBOL crosswalk built by bse_local_to_disk."""
-    p = r'F:\expansion\stocks-sena\bse_v3\_scrip_to_symbol.json'
-    if not os.path.exists(p):
-        return {}
+    """Load the BSE_SCRIP -> NSE_SYMBOL crosswalk built by bse_local_to_disk.
+    Falls back to fetching stock_master from Supabase if local file unavailable."""
+    p = os.environ.get('SCRIP_MAP_PATH', r'F:\expansion\stocks-sena\bse_v3\_scrip_to_symbol.json')
+    if os.path.exists(p):
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # Fallback: build from stock_master (works on GitHub Actions)
     try:
-        with open(p, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        out = {}
+        offset = 0
+        while True:
+            r = requests.get(
+                f'{URL}/rest/v1/stock_master?select=symbol,bse_scrip_code&bse_scrip_code=not.is.null',
+                headers={**H, 'Range': f'{offset}-{offset+999}'}, timeout=30,
+            )
+            batch = r.json()
+            if not batch:
+                break
+            for row in batch:
+                if row.get('bse_scrip_code'):
+                    out[str(row['bse_scrip_code'])] = row['symbol']
+            if len(batch) < 1000:
+                break
+            offset += 1000
+        return out
     except Exception:
         return {}
 

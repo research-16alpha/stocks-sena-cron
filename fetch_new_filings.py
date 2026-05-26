@@ -30,7 +30,7 @@ import time
 from datetime import datetime, timedelta, timezone
 import requests
 
-OUT_DIR = r'F:\expansion\stocks-sena\filings'
+OUT_DIR = os.environ.get('FILINGS_DIR', r'F:\expansion\stocks-sena\filings')
 LAST_RUN = os.path.join(OUT_DIR, '_last_run.json')
 
 IST = timezone(timedelta(hours=5, minutes=30))

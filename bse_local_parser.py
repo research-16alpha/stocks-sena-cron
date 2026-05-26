@@ -59,10 +59,14 @@ ATTR_CTX = re.compile(r"""contextRef=['"]([^'"]+)['"]""")
 ATTR_SCALE = re.compile(r"""scale=['"](-?\d+)['"]""")
 ATTR_SIGN = re.compile(r"""sign=['"]([-+])['"]""")
 
-# Older BSE XBRL (in-bse-fin namespace, 2007-2020)
+# BSE/SEBI XBRL XML (both old `in-bse-fin` namespace and new `in-capmkt` 2025 schema).
+# Captures any element from these two namespaces with a contextRef + scale.
 XBRL_BSEFIN_FACT_RE = re.compile(
-    r"""<in-bse-fin:([A-Za-z]+)\s+[^>]*?contextRef=['"]([^'"]+)['"][^>]*?>([^<]*)</in-bse-fin:[A-Za-z]+>""",
+    r"""<(?:in-bse-fin|in-capmkt):([A-Za-z]+)\s+([^>]*)>([^<]*)</(?:in-bse-fin|in-capmkt):[A-Za-z]+>""",
 )
+XBRL_BSEFIN_CTX_RE = re.compile(r"""contextRef=['"]([^'"]+)['"]""")
+XBRL_BSEFIN_SCALE_RE = re.compile(r"""scale=['"](-?\d+)['"]""")
+XBRL_BSEFIN_SIGN_RE = re.compile(r"""sign=['"]([-+])['"]""")
 
 # Context detection
 CTX_DIM_EXPLICIT_RE = re.compile(
@@ -141,6 +145,11 @@ def parse_xbrl_text(text: str) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dic
             }
 
     # Pass 2: iXBRL facts (newer files)
+    # iXBRL stores monetary values as (value × 10^scale) raw rupees with scale > 0.
+    # To avoid the legacy `to_crores` magnitude heuristic missing tiny line items
+    # (e.g. AMBALALSA NCI = 0.58 × 10^5 = 58,000 raw rupees, below the 1e6 threshold),
+    # convert monetary facts to crores here. EPS / ratios / per-share values have
+    # scale=0 (or absent) so they pass through unchanged.
     for m in IXBRL_FACT_RE.finditer(text):
         attrs = m.group(1)
         raw = m.group(2).strip().replace(',', '').replace('(', '-').replace(')', '')
@@ -155,14 +164,41 @@ def parse_xbrl_text(text: str) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dic
         sign = -1 if (sign_m and sign_m.group(1) == '-') else 1
         try:
             val = float(raw) * (10 ** scale) * sign
+            # Monetary iXBRL facts: scale > 0 means filed in raw rupees, convert to Cr.
+            # This bypasses the magnitude heuristic in to_crores() which fails for
+            # small line items in small companies (e.g. NCI = 58,000 raw rupees).
+            if scale > 0:
+                val = val / 1e7
             facts[tag][ctx] = str(val)
         except (ValueError, TypeError):
             facts[tag][ctx] = raw
 
-    # Pass 3: older XBRL XML facts (in-bse-fin)
+    # Pass 3: XBRL XML facts (in-bse-fin or in-capmkt SEBI 2025 schema)
+    # New SEBI 2025 XML files (e.g. SEBI Integrated Finance NBFC schema) use
+    # scale attributes just like iXBRL HTML. Old BSE XML files don't — values
+    # are absolute raw rupees. Apply scale only when present.
     for m in XBRL_BSEFIN_FACT_RE.finditer(text):
-        tag, ctx, raw = m.group(1), m.group(2), m.group(3).strip()
-        if ctx not in facts[tag]:
+        tag, attrs, raw = m.group(1), m.group(2), m.group(3).strip()
+        ctx_m = XBRL_BSEFIN_CTX_RE.search(attrs)
+        if not ctx_m:
+            continue
+        ctx = ctx_m.group(1)
+        if ctx in facts.get(tag, {}):
+            continue  # iXBRL Pass 2 already populated this
+        scale_m = XBRL_BSEFIN_SCALE_RE.search(attrs)
+        sign_m = XBRL_BSEFIN_SIGN_RE.search(attrs)
+        if scale_m:
+            try:
+                scale = int(scale_m.group(1))
+                sign = -1 if (sign_m and sign_m.group(1) == '-') else 1
+                val = float(raw.replace(',', '').replace('(', '-').replace(')', '')) * (10 ** scale) * sign
+                if scale > 0:
+                    val = val / 1e7
+                facts[tag][ctx] = str(val)
+            except (ValueError, TypeError):
+                facts[tag][ctx] = raw
+        else:
+            # No scale: legacy XML, raw rupees as-is. to_crores() handles magnitude.
             facts[tag][ctx] = raw
 
     return facts, contexts
@@ -225,9 +261,19 @@ def pick_top_level_instant(contexts: Dict[str, Dict], period_end: Optional[str] 
 # ANNUAL (MC files — iXBRL with full P&L + BS + CF)
 # ════════════════════════════════════════════════════════════════════════════
 
+_NSE_FILENAME_RE = re.compile(r'Annual_\d{2}-[A-Za-z]{3}-(\d{4})_to_(\d{2})-([A-Za-z]{3})-(\d{4})_', re.IGNORECASE)
+_MONTH_NUMS = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
+
+
 def parse_annual_file(path: str) -> Optional[Dict]:
     """
-    Parse one MC*.html (annual audited iXBRL).
+    Parse one annual XBRL filing.
+    Supports two formats:
+      • BSE iXBRL HTML (MC*.html) — has a single 350-380d period context
+      • NSE XBRL XML (Annual_*_Audited.xml) — has Q4 + YTD contexts with
+        identical date ranges; we read YTD from a context whose RevenueFromOperations
+        value is at least 3.5× the Q-only value, OR fall back to "FourD"/"EightD"
+        which are the standard NSE YTD-Q4 context IDs.
     Returns dict with period + pl + bs + cf + ratios + segments.
     """
     try:
@@ -238,11 +284,54 @@ def parse_annual_file(path: str) -> Optional[Dict]:
         return None
 
     facts, contexts = parse_xbrl_text(text)
-    period_ctx = pick_top_level_period(contexts, (350, 380))  # ~12 months
+
+    # ── Step 1: try BSE format (single 350-380d period) ──
+    period_ctx = pick_top_level_period(contexts, (350, 380))
+
+    fy_end: Optional[str] = None
+    instant_ctx: Optional[str] = None
+
+    if period_ctx:
+        fy_end = contexts[period_ctx]['end']
+        instant_ctx = pick_top_level_instant(contexts, fy_end)
+    else:
+        # ── Step 2: try NSE format (Q4-audited filing with YTD context) ──
+        # First check filename for FY-end hint
+        fname = os.path.basename(path)
+        m = _NSE_FILENAME_RE.search(fname)
+        if m:
+            mon_num = _MONTH_NUMS.get(m.group(3).lower(), 3)
+            fy_end = f'{m.group(4)}-{mon_num:02d}-{int(m.group(2)):02d}'
+
+        # Identify the YTD context by picking the period whose Revenue value
+        # is largest (YTD ≥ Q4-only). This is robust even if context ID naming
+        # varies across filers.
+        revenue_facts = facts.get('RevenueFromOperations') or facts.get('Income') or facts.get('InterestEarned') or {}
+        best_ctx = None
+        best_val = 0.0
+        for c, v in revenue_facts.items():
+            ctx = contexts.get(c)
+            if not ctx or ctx.get('dim') or ctx['type'] != 'period':
+                continue
+            try:
+                val = abs(float(v))
+            except Exception:
+                continue
+            if val > best_val:
+                best_val = val
+                best_ctx = c
+        period_ctx = best_ctx
+
+        # Instant: prefer match on fy_end; else latest non-dim instant
+        if fy_end:
+            instant_ctx = pick_top_level_instant(contexts, fy_end)
+        if not instant_ctx:
+            instant_ctx = pick_top_level_instant(contexts)
+
     if not period_ctx:
         return None
-    fy_end = contexts[period_ctx]['end']
-    instant_ctx = pick_top_level_instant(contexts, fy_end)
+    if fy_end is None:
+        fy_end = contexts[period_ctx]['end']
 
     def fnum(tag: str, ctx: Optional[str]) -> Optional[float]:
         if not ctx:
@@ -270,9 +359,41 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     net_profit = fnum('ProfitLossForPeriod', p) or fnum('ProfitLossForPeriodFromContinuingOperations', p) or fnum('NetProfit', p)
     eps_basic = fnum('BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations', p) or fnum('BasicEarningsLossPerShareFromContinuingOperations', p) or fnum('BasicEPSBeforeExtraordinaryItems', p)
     eps_diluted = fnum('DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations', p) or fnum('DilutedEarningsLossPerShareFromContinuingOperations', p) or fnum('DilutedEPSBeforeExtraordinaryItems', p)
-    exceptional = fnum('ExceptionalItemsBeforeTax', p)
+    exceptional = fnum('ExceptionalItemsBeforeTax', p) or fnum('ExceptionalItems', p)
     comp_income = fnum('ComprehensiveIncomeForThePeriod', p)
-    other_comp_income = fnum('OtherComprehensiveIncomeNetOfTaxes', p)
+    other_comp_income = fnum('OtherComprehensiveIncomeNetOfTaxes', p) or fnum('OtherComprehensiveIncome', p)
+    # Consolidated extras — share of associates/JVs + owners/NCI split
+    share_of_assoc = fnum('ShareOfProfitLossOfAssociatesAndJointVenturesAccountedForUsingEquityMethod', p) or fnum('ShareOfProfitLossOfAssociates', p)
+    np_owners = fnum('ProfitOrLossAttributableToOwnersOfParent', p)
+    np_nci = fnum('ProfitOrLossAttributableToNonControllingInterests', p) or fnum('ProfitLossOfMinorityInterest', p)
+    comp_income_owners = fnum('ComprehensiveIncomeForThePeriodAttributableToOwnersOfParent', p)
+    comp_income_nci = fnum('ComprehensiveIncomeForThePeriodAttributableToOwnersOfParentNonControllingInterests', p)
+    discontinued_after_tax = fnum('ProfitLossFromDiscontinuedOperationsAfterTax', p)
+    face_value_eq = fnum('FaceValueOfEquityShareCapital', p) or fnum('FaceValueOfEquityShareCapital', i)
+    # Bank-style P&L (HDFCBANK, SBIN, ICICIBANK etc — same namespace, different tags)
+    interest_earned = fnum('InterestEarned', p)
+    interest_expended = fnum('InterestExpended', p)
+    interest_on_advances = fnum('InterestOrDiscountOnAdvancesOrBills', p)
+    interest_on_rbi = fnum('InterestOnBalancesWithReserveBankOfIndiaAndOtherInterBankFunds', p)
+    income_on_invest = fnum('RevenueOnInvestments', p) or fnum('IncomeOnInvestments', p)
+    other_interest = fnum('OtherInterest', p)
+    bank_employees_cost = fnum('EmployeesCost', p)
+    bank_operating_exp = fnum('OperatingExpenses', p)
+    bank_other_op_exp = fnum('OtherOperatingExpenses', p)
+    bank_total_exp = fnum('ExpenditureExcludingProvisionsAndContingencies', p)
+    bank_opbpc = fnum('OperatingProfitBeforeProvisionAndContingencies', p)
+    bank_provisions = fnum('ProvisionsOtherThanTaxAndContingencies', p)
+    bank_total_income = fnum('Income', p)
+    bank_pbt_ord = fnum('ProfitLossFromOrdinaryActivitiesBeforeTax', p)
+    bank_pat_ord = fnum('ProfitLossFromOrdinaryActivitiesAfterTax', p)
+    # NBFC-style P&L (Bajaj Finance, Cholafin etc)
+    fee_commission_income = fnum('FeesAndCommissionIncome', p)
+    fee_commission_expense = fnum('FeesAndCommissionExpense', p)
+    dividend_income = fnum('DividendIncome', p)
+    rental_income = fnum('RentalIncome', p)
+    net_gain_fvtpl = fnum('NetGainOnFairValueChanges', p)
+    net_loss_fvtpl = fnum('NetLossOnFairValueChanges', p)
+    impairment_fin = fnum('ImpairmentOnFinancialInstruments', p)
 
     # EBITDA derive: PBT + Interest + Depreciation − OtherIncome
     ebitda = None
@@ -285,6 +406,14 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     operating_profit = ebitda
     opm_pct = (ebitda / revenue * 100) if (ebitda is not None and revenue) else None
     tax_pct = (tax / pbt * 100) if (tax is not None and pbt) else None
+    # NII = InterestEarned − InterestExpended (banks)
+    nii = None
+    if interest_earned is not None and interest_expended is not None:
+        nii = interest_earned - interest_expended
+
+    # Bank detection: presence of Deposits or InterestEarned signals a bank.
+    # NBFC detection: presence of `Loans` BS tag with substantial size + no Deposits.
+    is_bank_filing = (interest_earned is not None) or (fnum('Deposits', i) is not None and fnum('Deposits', i) > 0)
 
     # ─── Balance Sheet (instant) ───
     total_assets = fnum('Assets', i)
@@ -313,18 +442,91 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     biological = fnum('BiologicalAssetsOtherThanBearerPlants', i)
     curr_tax_assets = fnum('CurrentTaxAssets', i)
     curr_tax_liab = fnum('CurrentTaxLiabilities', i)
-    deferred_tax_assets = fnum('DeferredTaxAssets', i)
+    deferred_tax_assets = fnum('DeferredTaxAssets', i) or fnum('DeferredTaxAssetsNet', i)
+    deferred_tax_liab = fnum('DeferredTaxLiabilities', i) or fnum('DeferredTaxLiabilitiesNet', i)
+    # Ind AS 116 — Right-of-use assets + Lease liabilities are filed as separate
+    # XBRL tags (when the filer's iXBRL schema supports it). Earlier filings
+    # (FY20 and before) often roll RoU into PPE.
+    rou_assets = fnum('RightOfUseAssets', i) or fnum('RightOfUseAsset', i)
+    lease_liab_curr = fnum('LeaseLiabilitiesCurrent', i)
+    lease_liab_noncurr = fnum('LeaseLiabilitiesNoncurrent', i)
+    lease_liab_total = None
+    if lease_liab_curr is not None or lease_liab_noncurr is not None:
+        lease_liab_total = (lease_liab_curr or 0) + (lease_liab_noncurr or 0)
 
     # Reserves: typically derivable from total equity − share capital, but only
     # if total_equity is filed. Most filings have a separate Reserves tag too.
-    reserves = fnum('Reserves', i) or fnum('OtherEquity', i)
-    total_equity = fnum('Equity', i)
+    reserves = fnum('Reserves', i) or fnum('OtherEquity', i) or fnum('ReserveExcludingRevaluationReserves', i) or fnum('ReservesAndSurplus', i)
+    total_equity = fnum('Equity', i) or fnum('EquityAttributableToOwnersOfParent', i)
     if total_equity is None and equity_capital is not None and reserves is not None:
         total_equity = equity_capital + reserves
 
     total_investments = None
     if curr_invest is not None or noncurr_invest is not None:
         total_investments = (curr_invest or 0) + (noncurr_invest or 0)
+
+    # ─── BS extras — Schedule III non-bank ───
+    goodwill = fnum('Goodwill', i)
+    investment_property = fnum('InvestmentProperty', i)
+    equity_owners = fnum('EquityAttributableToOwnersOfParent', i)
+    nci_balance = fnum('NonControllingInterest', i) or fnum('MinorityInterest', i)
+    total_liab_filed = fnum('Liabilities', i)
+    equity_and_liab = fnum('EquityAndLiabilities', i)
+    noncurr_assets_total = fnum('NoncurrentAssets', i)
+    loans_curr = fnum('LoansCurrent', i)
+    loans_noncurr = fnum('LoansNoncurrent', i)
+    fin_assets_curr = fnum('CurrentFinancialAssets', i)
+    fin_assets_noncurr = fnum('NoncurrentFinancialAssets', i)
+    fin_liab_curr = fnum('CurrentFinancialLiabilities', i)
+    fin_liab_noncurr = fnum('NoncurrentFinancialLiabilities', i)
+    provisions_curr = fnum('ProvisionsCurrent', i)
+    provisions_noncurr = fnum('ProvisionsNoncurrent', i)
+    other_fin_assets_curr = fnum('OtherCurrentFinancialAssets', i)
+    other_fin_assets_noncurr = fnum('OtherNoncurrentFinancialAssets', i)
+    other_fin_liab_curr = fnum('OtherCurrentFinancialLiabilities', i)
+    other_fin_liab_noncurr = fnum('OtherNoncurrentFinancialLiabilities', i)
+    other_curr_assets_misc = fnum('OtherCurrentAssets', i)
+    other_noncurr_assets_misc = fnum('OtherNoncurrentAssets', i)
+    other_curr_liab_misc = fnum('OtherCurrentLiabilities', i)
+    other_noncurr_liab_misc = fnum('OtherNoncurrentLiabilities', i)
+    held_for_sale = fnum('NoncurrentAssetsClassifiedAsHeldForSale', i)
+    invest_equity_method = fnum('InvestmentsAccountedForUsingEquityMethod', i)
+
+    # ─── BS extras — Bank Schedule III ───
+    bank_capital = fnum('Capital', i)
+    bank_reserves_surplus = fnum('ReservesAndSurplus', i)
+    bank_deposits = fnum('Deposits', i)
+    bank_borrowings = fnum('Borrowings', i)
+    bank_other_liab_provisions = fnum('OtherLiabilitiesAndProvisions', i)
+    bank_cash_rbi = fnum('CashAndBalancesWithReserveBankOfIndia', i)
+    bank_balances_other_banks = fnum('BalancesWithBanksAndMoneyAtCallAndShortNotice', i)
+    bank_advances = fnum('Advances', i)
+    bank_investments = fnum('Investments', i)  # banks file investments as flat (no curr/noncurr split)
+    bank_fixed_assets = fnum('FixedAssets', i)
+    bank_other_assets = fnum('OtherAssets', i)
+    bank_total_capital_liab = fnum('CapitalAndLiabilities', i)
+    # Asset quality (often filed as 0 in annual XBRL; richer quarterly disclosures)
+    gross_npa_amt = fnum('GrossNonPerformingAssets', p) or fnum('GrossNonPerformingAssets', i)
+    nonperforming_assets = fnum('NonPerformingAssets', p) or fnum('NonPerformingAssets', i)
+    gross_npa_pct = fnum('PercentageOfGrossNpa', p) or fnum('PercentageOfGrossNpa', i)
+    net_npa_pct = fnum('PercentageOfNpa', p) or fnum('PercentageOfNpa', i)
+    cet1_ratio = fnum('CET1Ratio', p) or fnum('CET1Ratio', i)
+    addl_tier1 = fnum('AdditionalTier1Ratio', p) or fnum('AdditionalTier1Ratio', i)
+    return_on_assets = fnum('ReturnOnAssets', p) or fnum('ReturnOnAssets', i)
+
+    # ─── BS extras — NBFC Schedule III (Bajaj Finance etc) ───
+    nbfc_loans = fnum('Loans', i)
+    nbfc_fin_assets = fnum('FinanicalAssets', i) or fnum('FinancialAssets', i)  # note: BSE taxonomy has the typo
+    nbfc_non_fin_assets = fnum('NonFinancialAssets', i)
+    nbfc_fin_liab = fnum('FinancialLiabilities', i)
+    nbfc_non_fin_liab = fnum('NonFinancialLiabilities', i)
+    nbfc_other_fin_assets = fnum('OtherFinancialAssets', i)
+    nbfc_other_fin_liab = fnum('OtherFinancialLiabilities', i)
+    nbfc_provisions = fnum('Provisions', i)
+    nbfc_debt_securities = fnum('DebtSecurities', i)
+    nbfc_subordinated = fnum('SubordinatedLiabilities', i)
+    nbfc_derivative_assets = fnum('DerivativeFinancialInstrumentsFinancialAssets', i)
+    nbfc_derivative_liab = fnum('DerivativeFinancialInstrumentsFinancialLiabilities', i)
 
     # ─── Cash Flow (period) ───
     cfo = fnum('CashFlowsFromUsedInOperatingActivities', p)
@@ -347,6 +549,44 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     # Common addbacks
     dep_addback = fnum('AdjustmentsForDepreciationAndAmortisationExpense', p)
     finance_addback = fnum('AdjustmentsForFinanceCosts', p)
+    interest_income_addback = fnum('AdjustmentsForInterestIncome', p)
+    dividend_income_addback = fnum('AdjustmentsForDividendIncome', p)
+    fx_addback = fnum('AdjustmentsForUnrealisedForeignExchangeLossesGains', p)
+    sharebased_addback = fnum('AdjustmentsForSharebasedPayments', p)
+    impairment_addback = fnum('AdjustmentsForImpairmentLossReversalOfImpairmentLossRecognisedInProfitOrLoss', p)
+    # Extra WC adjustments
+    wc_other_curr_assets = fnum('AdjustmentsForDecreaseIncreaseInOtherCurrentAssets', p)
+    wc_other_curr_liab = fnum('AdjustmentsForIncreaseDecreaseInOtherCurrentLiabilities', p)
+    wc_recv_noncurr = fnum('AdjustmentsForDecreaseIncreaseInTradeReceivablesNoncurrent', p)
+    wc_pay_noncurr = fnum('AdjustmentsForIncreaseDecreaseInTradePayablesNoncurrent', p)
+    wc_other_noncurr_assets = fnum('AdjustmentsForDecreaseIncreaseInOtherNoncurrentAssets', p)
+    wc_other_noncurr_liab = fnum('AdjustmentsForIncreaseDecreaseInOtherNoncurrentLiabilities', p)
+    wc_provisions_curr = fnum('AdjustmentsForProvisionsCurrent', p)
+    wc_provisions_noncurr = fnum('AdjustmentsForProvisionsNoncurrent', p)
+    # Operating cash receipts/payments (rare but valuable)
+    cash_taxes_paid_op = fnum('IncomeTaxesPaidRefundClassifiedAsOperatingActivities', p)
+    cash_int_paid_op = fnum('InterestPaidClassifiedAsOperatingActivities', p)
+    cash_int_recv_op = fnum('InterestReceivedClassifiedAsOperatingActivities', p)
+    cash_div_recv_op = fnum('DividendsReceivedClassifiedAsOperatingActivities', p)
+    # Investing detail
+    cash_int_recv_inv = fnum('InterestReceivedClassifiedAsInvestingActivities', p)
+    cash_div_recv_inv = fnum('DividendsReceivedClassifiedAsInvestingActivities', p)
+    invest_property_purchase = fnum('PurchaseOfInvestmentPropertyClassifiedAsInvestingActivities', p)
+    invest_property_sale = fnum('ProceedsFromSalesOfInvestmentPropertyClassifiedAsInvestingActivities', p)
+    proceeds_subsidiaries = fnum('ProceedsFromChangesInOwnershipInterestsInSubsidiaries', p)
+    payments_subsidiaries = fnum('PaymentsFromChangesInOwnershipInterestsInSubsidiaries', p)
+    # Financing detail
+    cash_int_paid_fin = fnum('InterestPaidClassifiedAsFinancingActivities', p)
+    lease_payments = fnum('PaymentsOfLeaseLiabilitiesClassifiedAsFinancingActivities', p)
+    finance_lease_payments = fnum('PaymentsOfFinanceLeaseLiabilitiesClassifiedAsFinancingActivities', p)
+    proceeds_shares = fnum('ProceedsFromIssuingSharesClassifiedAsFinancingActivities', p) or fnum('ProceedsFromIssuingShares', p)
+    proceeds_debentures = fnum('ProceedsFromIssuingDebenturesNotesBondsEtc', p)
+    share_buyback = fnum('PaymentsToAcquireOrRedeemEntitysShares', p)
+    proceeds_stock_options = fnum('ProceedsFromExerciseOfStockOptions', p)
+    # FX adjustment on cash + net change in cash
+    fx_on_cash = fnum('EffectOfExchangeRateChangesOnCashAndCashEquivalents', p)
+    net_change_cash = fnum('IncreaseDecreaseInCashAndCashEquivalents', p)
+    net_change_cash_pre_fx = fnum('IncreaseDecreaseInCashAndCashEquivalentsBeforeEffectOfExchangeRateChanges', p)
     # Dividend / financing detail
     dividend_paid = fnum('DividendsPaidClassifiedAsFinancingActivities', p) or fnum('DividendPaid', p)
     repayment_borrowings = fnum('RepaymentsOfBorrowingsClassifiedAsFinancingActivities', p)
@@ -393,6 +633,40 @@ def parse_annual_file(path: str) -> Optional[Dict]:
             'exceptional_items': to_crores(exceptional),
             'comprehensive_income': to_crores(comp_income),
             'other_comprehensive_income': to_crores(other_comp_income),
+            # Consolidated extras
+            'share_of_associates_jv': to_crores(share_of_assoc),
+            'net_profit_owners': to_crores(np_owners),
+            'net_profit_nci': to_crores(np_nci),
+            'comprehensive_income_owners': to_crores(comp_income_owners),
+            'comprehensive_income_nci': to_crores(comp_income_nci),
+            'discontinued_operations_after_tax': to_crores(discontinued_after_tax),
+            'face_value': face_value_eq,
+            # Bank-style P&L
+            'interest_earned': to_crores(interest_earned),
+            'interest_expended': to_crores(interest_expended),
+            'net_interest_income': to_crores(nii),
+            'interest_on_advances': to_crores(interest_on_advances),
+            'interest_on_rbi_balances': to_crores(interest_on_rbi),
+            'income_on_investments': to_crores(income_on_invest),
+            'other_interest_income': to_crores(other_interest),
+            'bank_total_income': to_crores(bank_total_income),
+            'bank_employees_cost': to_crores(bank_employees_cost),
+            'bank_operating_expenses': to_crores(bank_operating_exp),
+            'bank_other_operating_expenses': to_crores(bank_other_op_exp),
+            'bank_total_expenses': to_crores(bank_total_exp),
+            'operating_profit_pre_provisions': to_crores(bank_opbpc),
+            'provisions_other_than_tax': to_crores(bank_provisions),
+            'pbt_ordinary': to_crores(bank_pbt_ord),
+            'pat_ordinary': to_crores(bank_pat_ord),
+            # NBFC-style income items
+            'fee_commission_income': to_crores(fee_commission_income),
+            'fee_commission_expense': to_crores(fee_commission_expense),
+            'dividend_income': to_crores(dividend_income),
+            'rental_income': to_crores(rental_income),
+            'net_gain_fair_value': to_crores(net_gain_fvtpl),
+            'net_loss_fair_value': to_crores(net_loss_fvtpl),
+            'impairment_on_financial_instruments': to_crores(impairment_fin),
+            '_is_bank': is_bank_filing,
         },
         'bs': {
             'period': fy_end,
@@ -428,6 +702,72 @@ def parse_annual_file(path: str) -> Optional[Dict]:
             'current_tax_assets': to_crores(curr_tax_assets),
             'current_tax_liabilities': to_crores(curr_tax_liab),
             'deferred_tax_assets': to_crores(deferred_tax_assets),
+            'deferred_tax_liabilities': to_crores(deferred_tax_liab),
+            'right_of_use_assets': to_crores(rou_assets),
+            'lease_liabilities_current': to_crores(lease_liab_curr),
+            'lease_liabilities_noncurrent': to_crores(lease_liab_noncurr),
+            'lease_liabilities': to_crores(lease_liab_total),
+            # Non-bank BS extras
+            'goodwill': to_crores(goodwill),
+            'investment_property': to_crores(investment_property),
+            'equity_attributable_to_owners': to_crores(equity_owners),
+            'non_controlling_interest': to_crores(nci_balance),
+            'total_liabilities_filed': to_crores(total_liab_filed),
+            'equity_and_liabilities': to_crores(equity_and_liab),
+            'noncurrent_assets_total': to_crores(noncurr_assets_total),
+            'loans_current': to_crores(loans_curr),
+            'loans_noncurrent': to_crores(loans_noncurr),
+            'financial_assets_current': to_crores(fin_assets_curr),
+            'financial_assets_noncurrent': to_crores(fin_assets_noncurr),
+            'financial_liabilities_current': to_crores(fin_liab_curr),
+            'financial_liabilities_noncurrent': to_crores(fin_liab_noncurr),
+            'provisions_current': to_crores(provisions_curr),
+            'provisions_noncurrent': to_crores(provisions_noncurr),
+            'other_financial_assets_current': to_crores(other_fin_assets_curr),
+            'other_financial_assets_noncurrent': to_crores(other_fin_assets_noncurr),
+            'other_financial_liabilities_current': to_crores(other_fin_liab_curr),
+            'other_financial_liabilities_noncurrent': to_crores(other_fin_liab_noncurr),
+            'other_current_assets': to_crores(other_curr_assets_misc),
+            'other_noncurrent_assets': to_crores(other_noncurr_assets_misc),
+            'other_current_liabilities_misc': to_crores(other_curr_liab_misc),
+            'other_noncurrent_liabilities_misc': to_crores(other_noncurr_liab_misc),
+            'assets_held_for_sale': to_crores(held_for_sale),
+            'investments_equity_method': to_crores(invest_equity_method),
+            # Bank Schedule III BS
+            'bank_capital': to_crores(bank_capital),
+            'bank_reserves_surplus': to_crores(bank_reserves_surplus),
+            'deposits': to_crores(bank_deposits),
+            'bank_borrowings': to_crores(bank_borrowings),
+            'bank_other_liabilities_provisions': to_crores(bank_other_liab_provisions),
+            'cash_with_rbi': to_crores(bank_cash_rbi),
+            'balances_with_banks': to_crores(bank_balances_other_banks),
+            'advances': to_crores(bank_advances),
+            'bank_investments': to_crores(bank_investments),
+            'bank_fixed_assets': to_crores(bank_fixed_assets),
+            'bank_other_assets': to_crores(bank_other_assets),
+            'total_capital_and_liabilities': to_crores(bank_total_capital_liab),
+            # Asset quality (banks)
+            'gross_npa_amount': to_crores(gross_npa_amt),
+            'non_performing_assets': to_crores(nonperforming_assets),
+            'gross_npa_pct': gross_npa_pct,
+            'net_npa_pct': net_npa_pct,
+            'cet1_ratio': cet1_ratio,
+            'additional_tier1_ratio': addl_tier1,
+            'return_on_assets_pct': return_on_assets,
+            # NBFC Schedule III BS (Bajaj Finance etc.)
+            'nbfc_loans': to_crores(nbfc_loans),
+            'nbfc_financial_assets': to_crores(nbfc_fin_assets),
+            'nbfc_non_financial_assets': to_crores(nbfc_non_fin_assets),
+            'nbfc_financial_liabilities': to_crores(nbfc_fin_liab),
+            'nbfc_non_financial_liabilities': to_crores(nbfc_non_fin_liab),
+            'nbfc_other_financial_assets': to_crores(nbfc_other_fin_assets),
+            'nbfc_other_financial_liabilities': to_crores(nbfc_other_fin_liab),
+            'nbfc_provisions': to_crores(nbfc_provisions),
+            'nbfc_debt_securities': to_crores(nbfc_debt_securities),
+            'nbfc_subordinated_liabilities': to_crores(nbfc_subordinated),
+            'nbfc_derivative_assets': to_crores(nbfc_derivative_assets),
+            'nbfc_derivative_liabilities': to_crores(nbfc_derivative_liab),
+            '_is_bank': is_bank_filing,
         },
         'cf': {
             'period': fy_end,
@@ -445,6 +785,39 @@ def parse_annual_file(path: str) -> Optional[Dict]:
             'wc_change_payables': to_crores(wc_payables),
             'depreciation_addback': to_crores(dep_addback),
             'finance_costs_addback': to_crores(finance_addback),
+            'interest_income_addback': to_crores(interest_income_addback),
+            'dividend_income_addback': to_crores(dividend_income_addback),
+            'fx_addback': to_crores(fx_addback),
+            'sharebased_payments_addback': to_crores(sharebased_addback),
+            'impairment_addback': to_crores(impairment_addback),
+            'wc_change_other_curr_assets': to_crores(wc_other_curr_assets),
+            'wc_change_other_curr_liab': to_crores(wc_other_curr_liab),
+            'wc_change_receivables_noncurrent': to_crores(wc_recv_noncurr),
+            'wc_change_payables_noncurrent': to_crores(wc_pay_noncurr),
+            'wc_change_other_noncurr_assets': to_crores(wc_other_noncurr_assets),
+            'wc_change_other_noncurr_liab': to_crores(wc_other_noncurr_liab),
+            'wc_change_provisions_current': to_crores(wc_provisions_curr),
+            'wc_change_provisions_noncurrent': to_crores(wc_provisions_noncurr),
+            'taxes_paid_operating': to_crores(cash_taxes_paid_op),
+            'interest_paid_operating': to_crores(cash_int_paid_op),
+            'interest_received_operating': to_crores(cash_int_recv_op),
+            'dividend_received_operating': to_crores(cash_div_recv_op),
+            'interest_received_investing': to_crores(cash_int_recv_inv),
+            'dividend_received_investing': to_crores(cash_div_recv_inv),
+            'investment_property_purchase': to_crores(invest_property_purchase),
+            'investment_property_sale': to_crores(invest_property_sale),
+            'proceeds_from_subsidiaries': to_crores(proceeds_subsidiaries),
+            'payments_to_subsidiaries': to_crores(payments_subsidiaries),
+            'interest_paid_financing': to_crores(cash_int_paid_fin),
+            'lease_liability_payments': to_crores(lease_payments),
+            'finance_lease_payments': to_crores(finance_lease_payments),
+            'proceeds_shares': to_crores(proceeds_shares),
+            'proceeds_debentures': to_crores(proceeds_debentures),
+            'share_buyback': to_crores(share_buyback),
+            'proceeds_stock_options': to_crores(proceeds_stock_options),
+            'fx_on_cash': to_crores(fx_on_cash),
+            'net_change_cash_filed': to_crores(net_change_cash),
+            'net_change_cash_pre_fx': to_crores(net_change_cash_pre_fx),
             'dividend_paid': to_crores(dividend_paid),
             'repayment_borrowings': to_crores(repayment_borrowings),
             'proceeds_borrowings': to_crores(proceeds_borrowings),
@@ -466,6 +839,12 @@ def parse_annual_file(path: str) -> Optional[Dict]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def parse_quarterly_file(path: str) -> Optional[Dict]:
+    """
+    Parse one quarterly XBRL filing (DQ/SQ/JQ/MQ).
+    Extended for Sprint 2 to capture bank/NBFC fields (Interest Earned/Expended,
+    Deposits, Advances, NPA, CET-1, CRAR — these are filed quarterly under
+    SEBI Reg 33, NOT annually).
+    """
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             text = f.read()
@@ -475,24 +854,76 @@ def parse_quarterly_file(path: str) -> Optional[Dict]:
     facts, contexts = parse_xbrl_text(text)
     p = pick_top_level_period(contexts, (80, 100))  # ~3 months
     if not p:
+        # NSE/newer XBRL — pick the context with highest revenue-like fact
+        revenue_facts = facts.get('RevenueFromOperations') or facts.get('Income') or facts.get('InterestEarned') or {}
+        best_ctx = None
+        best_val = 0.0
+        for c, v in revenue_facts.items():
+            ctx = contexts.get(c)
+            if not ctx or ctx.get('dim') or ctx['type'] != 'period':
+                continue
+            try:
+                val = abs(float(v))
+            except Exception:
+                continue
+            if val > best_val:
+                best_val = val
+                best_ctx = c
+        p = best_ctx
+    if not p:
         return None
     period_end = contexts[p]['end']
+    # Also pick instant (year-end / quarter-end snapshot) for BS-like fields
+    i_ctx = pick_top_level_instant(contexts, period_end) or pick_top_level_instant(contexts)
 
-    def fnum(tag: str) -> Optional[float]:
-        return num(facts.get(tag, {}).get(p))
+    def fnum(tag: str, ctx: Optional[str] = None) -> Optional[float]:
+        return num(facts.get(tag, {}).get(ctx or p))
 
     revenue = fnum('RevenueFromOperations') or fnum('Income')
-    if revenue is None:
+    interest_earned = fnum('InterestEarned')
+    if revenue is None and interest_earned is None:
         return None
 
     other_income = fnum('OtherIncome')
     expenses = fnum('Expenses')
-    employee = fnum('EmployeeBenefitExpense')
-    finance_costs = fnum('FinanceCosts')
-    depreciation = fnum('DepreciationDepletionAndAmortisationExpense')
-    pbt = fnum('ProfitBeforeTax')
+    employee = fnum('EmployeeBenefitExpense') or fnum('StaffCost') or fnum('EmployeesCost')
+    finance_costs = fnum('FinanceCosts') or fnum('Interest')
+    depreciation = fnum('DepreciationDepletionAndAmortisationExpense') or fnum('Depreciation')
+    pbt = fnum('ProfitBeforeTax') or fnum('ProfitLossFromOrdinaryActivitiesBeforeTax')
     tax = fnum('TaxExpense')
-    net_profit = fnum('ProfitLossForPeriod') or fnum('ProfitLossForPeriodFromContinuingOperations')
+    net_profit = fnum('ProfitLossForPeriod') or fnum('ProfitLossForPeriodFromContinuingOperations') or fnum('NetProfit') or fnum('ProfitLossFromOrdinaryActivitiesAfterTax')
+
+    # ── Bank-style quarterly fields ──
+    interest_expended = fnum('InterestExpended')
+    interest_on_advances = fnum('InterestOrDiscountOnAdvancesOrBills')
+    interest_on_rbi = fnum('InterestOnBalancesWithReserveBankOfIndiaAndOtherInterBankFunds')
+    income_on_invest = fnum('RevenueOnInvestments') or fnum('IncomeOnInvestments')
+    bank_total_income = fnum('Income')
+    bank_employees_cost = fnum('EmployeesCost')
+    bank_other_op_exp = fnum('OtherOperatingExpenses')
+    bank_total_exp = fnum('ExpenditureExcludingProvisionsAndContingencies')
+    bank_opbpc = fnum('OperatingProfitBeforeProvisionAndContingencies')
+    bank_provisions = fnum('ProvisionsOtherThanTaxAndContingencies')
+    # Asset quality (these are typically filed quarterly, not annually)
+    gross_npa_amt = fnum('GrossNonPerformingAssets') or fnum('GrossNonPerformingAssets', i_ctx)
+    nonperf = fnum('NonPerformingAssets') or fnum('NonPerformingAssets', i_ctx)
+    gross_npa_pct = fnum('PercentageOfGrossNpa') or fnum('PercentageOfGrossNpa', i_ctx)
+    net_npa_pct = fnum('PercentageOfNpa') or fnum('PercentageOfNpa', i_ctx)
+    cet1 = fnum('CET1Ratio') or fnum('CET1Ratio', i_ctx)
+    addl_t1 = fnum('AdditionalTier1Ratio') or fnum('AdditionalTier1Ratio', i_ctx)
+    crar = fnum('CapitalAdequacyRatio') or fnum('CapitalAdequacyRatio', i_ctx) or fnum('TotalCapitalRatio')
+    return_on_assets = fnum('ReturnOnAssets') or fnum('ReturnOnAssets', i_ctx)
+    # Bank BS — present in some quarterly disclosures
+    deposits = fnum('Deposits', i_ctx) if i_ctx else None
+    advances = fnum('Advances', i_ctx) if i_ctx else None
+    cash_with_rbi = fnum('CashAndBalancesWithReserveBankOfIndia', i_ctx) if i_ctx else None
+    bank_balances = fnum('BalancesWithBanksAndMoneyAtCallAndShortNotice', i_ctx) if i_ctx else None
+
+    nii = None
+    if interest_earned is not None and interest_expended is not None:
+        nii = interest_earned - interest_expended
+
+    is_bank_filing = (interest_earned is not None) or (deposits is not None and deposits > 0)
 
     ebitda = None
     if pbt is not None:
@@ -521,13 +952,41 @@ def parse_quarterly_file(path: str) -> Optional[Dict]:
         'tax_expense': to_crores(tax),
         'tax_pct': tax_pct,
         'net_profit': to_crores(net_profit),
-        'eps': fnum('BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations') or fnum('BasicEarningsLossPerShareFromContinuingOperations'),
+        'eps': fnum('BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations') or fnum('BasicEarningsLossPerShareFromContinuingOperations') or fnum('BasicEarningsPerShareAfterExtraordinaryItems'),
         'basic_eps': fnum('BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations'),
         'diluted_eps': fnum('DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations'),
-        'exceptional_items': to_crores(fnum('ExceptionalItemsBeforeTax')),
+        'exceptional_items': to_crores(fnum('ExceptionalItemsBeforeTax') or fnum('ExceptionalItems')),
         'debt_equity_ratio': fnum('DebtEquityRatio'),
         'interest_service_coverage_ratio': fnum('InterestServiceCoverageRatio'),
         'debt_service_coverage_ratio': fnum('DebtServiceCoverageRatio'),
+        # Bank quarterly fields
+        'interest_earned': to_crores(interest_earned),
+        'interest_expended': to_crores(interest_expended),
+        'net_interest_income': to_crores(nii),
+        'interest_on_advances': to_crores(interest_on_advances),
+        'interest_on_rbi_balances': to_crores(interest_on_rbi),
+        'income_on_investments': to_crores(income_on_invest),
+        'bank_total_income': to_crores(bank_total_income),
+        'bank_employees_cost': to_crores(bank_employees_cost),
+        'bank_other_operating_expenses': to_crores(bank_other_op_exp),
+        'bank_total_expenses': to_crores(bank_total_exp),
+        'operating_profit_pre_provisions': to_crores(bank_opbpc),
+        'provisions_other_than_tax': to_crores(bank_provisions),
+        # Asset quality (quarterly)
+        'gross_npa_amount': to_crores(gross_npa_amt),
+        'non_performing_assets': to_crores(nonperf),
+        'gross_npa_pct': gross_npa_pct,
+        'net_npa_pct': net_npa_pct,
+        'cet1_ratio': cet1,
+        'additional_tier1_ratio': addl_t1,
+        'capital_adequacy_ratio': crar,
+        'return_on_assets_pct': return_on_assets,
+        # Bank BS quarter-end snapshot
+        'deposits': to_crores(deposits),
+        'advances': to_crores(advances),
+        'cash_with_rbi': to_crores(cash_with_rbi),
+        'balances_with_banks': to_crores(bank_balances),
+        '_is_bank': is_bank_filing,
     }
 
 

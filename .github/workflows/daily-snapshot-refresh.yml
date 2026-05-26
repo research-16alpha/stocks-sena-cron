@@ -1,0 +1,30 @@
+name: Daily Snapshot Refresh
+
+on:
+  schedule:
+    # Twice daily — once after market close, once early morning
+    - cron: '0 12 * * 1-5'   # 12:00 UTC = 5:30 PM IST (post-close)
+    - cron: '0 2 * * *'      # 2:00 UTC = 7:30 AM IST (catch-up + weekend)
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh snapshots (price, PE, PB, mcap, 52w range)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python daily_snapshot_refresh.py

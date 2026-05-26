@@ -71,34 +71,29 @@ def fetch_symbols(limit: int = 0) -> list[str]:
     return syms
 
 
-def fetch_ohlcv(symbol: str) -> dict | None:
-    """Pull 5y daily from Yahoo Chart API. Returns compact bundle or None."""
-    url = f"{YAHOO_BASE}/{symbol}.NS"
+def _fetch_ohlcv_single(yahoo_ticker: str) -> dict | None:
+    """Fetch 5y OHLCV for ONE specific Yahoo ticker form. Returns parsed bundle or None."""
+    url = f"{YAHOO_BASE}/{yahoo_ticker}"
     params = {"interval": "1d", "range": "5y"}
     try:
         r = requests.get(url, params=params, headers=HEADERS, timeout=15)
         if r.status_code != 200:
-            print(f"[WARN] {symbol}: HTTP {r.status_code}", file=sys.stderr)
             return None
         payload = r.json()
         result = (payload.get("chart", {}).get("result") or [None])[0]
         if not result:
             return None
-
         timestamps = result.get("timestamp") or []
+        if not timestamps:
+            return None
         quote = (result.get("indicators", {}).get("quote") or [{}])[0]
         opens = quote.get("open") or []
         highs = quote.get("high") or []
         lows = quote.get("low") or []
         closes = quote.get("close") or []
         vols = quote.get("volume") or []
-
-        if not timestamps:
-            return None
-
         bars = []
         for i, ts in enumerate(timestamps):
-            # Skip any partial / null bar
             if i >= len(closes) or closes[i] is None:
                 continue
             d = datetime.fromtimestamp(ts, tz=IST).strftime("%Y-%m-%d")
@@ -110,20 +105,45 @@ def fetch_ohlcv(symbol: str) -> dict | None:
                 round(float(closes[i]), 2),
                 int(vols[i]) if vols[i] not in (None, 0) else 0,
             ])
-
         if not bars:
             return None
-
         return {
-            "symbol": symbol,
             "interval": "1d",
             "from": bars[0][0],
             "to": bars[-1][0],
             "bars": bars,
+            "_ticker_used": yahoo_ticker,
         }
-    except Exception as e:
-        print(f"[WARN] {symbol}: {e}", file=sys.stderr)
+    except Exception:
         return None
+
+
+def fetch_ohlcv(symbol: str) -> dict | None:
+    """Pull 5y daily OHLCV with Yahoo fallback chain:
+      1. .NS suffix (NSE)
+      2. .BO suffix (BSE by symbol)
+      3. <numeric>.BO (for BSE-prefixed names like BSE500014 → 500014.BO)
+    Returns bundle with `symbol` set, or None if no ticker variant has data.
+    """
+    import re
+    # 1. NSE
+    bundle = _fetch_ohlcv_single(f"{symbol}.NS")
+    if bundle:
+        bundle["symbol"] = symbol
+        return bundle
+    # 2. BSE by symbol
+    bundle = _fetch_ohlcv_single(f"{symbol}.BO")
+    if bundle:
+        bundle["symbol"] = symbol
+        return bundle
+    # 3. BSE by numeric scrip code (BSE500014 → 500014.BO, BSE_501242 → 501242.BO)
+    m = re.match(r"^BSE_?(\d+)$", symbol)
+    if m:
+        bundle = _fetch_ohlcv_single(f"{m.group(1)}.BO")
+        if bundle:
+            bundle["symbol"] = symbol
+            return bundle
+    return None
 
 
 def upload(symbol: str, bundle: dict) -> bool:
@@ -140,33 +160,48 @@ def upload(symbol: str, bundle: dict) -> bool:
         return False
 
 
+def _process_one(sym: str) -> tuple:
+    """Worker: fetch OHLCV + upload. Returns (sym, status, bar_count)."""
+    bundle = fetch_ohlcv(sym)
+    if not bundle:
+        return (sym, 'NO_QUOTE', 0)
+    if upload(sym, bundle):
+        return (sym, 'OK', len(bundle['bars']))
+    return (sym, 'UPLOAD_ERR', 0)
+
+
 def main():
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     # Default: full universe. Override via env LIMIT=200 to restrict.
     limit = int(os.environ.get("LIMIT", "0"))
+    workers = int(os.environ.get("WORKERS", "10"))
     symbols = fetch_symbols(limit)
-    print(f"[INFO] Daily OHLCV refresh -> bucket '{BUCKET}' · {len(symbols)} stocks")
+    print(f"[INFO] Daily OHLCV refresh -> bucket '{BUCKET}' · {len(symbols)} stocks · {workers} workers")
 
     ok = 0
-    failed = []
+    no_quote = 0
+    upload_err = 0
+    t0 = time.time()
 
-    for i, sym in enumerate(symbols, 1):
-        bundle = fetch_ohlcv(sym)
-        if bundle and upload(sym, bundle):
-            ok += 1
-            if i <= 3 or i % 25 == 0:
-                # Periodic sanity log so we can spot regressions in run output.
-                print(f"[OK] {sym}: {len(bundle['bars'])} bars, last {bundle['to']}")
-        else:
-            failed.append(sym)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_process_one, s): s for s in symbols}
+        for i, fut in enumerate(as_completed(futs), 1):
+            try:
+                sym, status, bars = fut.result()
+            except Exception:
+                continue
+            if status == 'OK': ok += 1
+            elif status == 'NO_QUOTE': no_quote += 1
+            elif status == 'UPLOAD_ERR': upload_err += 1
+            if i % 200 == 0:
+                elapsed = time.time() - t0
+                rate = i / elapsed
+                eta = (len(symbols) - i) / rate if rate > 0 else 0
+                print(f'  {i}/{len(symbols)}  ok={ok} no_quote={no_quote} upload_err={upload_err}  '
+                      f'rate={rate:.1f}/s  eta={eta:.0f}s')
 
-        time.sleep(SLEEP_BETWEEN)
-        if (i % BATCH_SIZE) == 0:
-            print(f"[INFO] {i}/{len(symbols)} · ok={ok} failed={len(failed)} · sleeping {BATCH_BREAK}s")
-            time.sleep(BATCH_BREAK)
-
-    print(f"[OK] {datetime.now(IST).isoformat()} · refreshed={ok}/{len(symbols)} failed={len(failed)}")
-    if failed:
-        print(f"[FAIL] {failed[:20]}{'...' if len(failed) > 20 else ''}")
+    elapsed = time.time() - t0
+    print(f'\n[done] {ok}/{len(symbols)} OK · {no_quote} no quote · {upload_err} upload errs · {elapsed:.0f}s')
 
 
 if __name__ == "__main__":

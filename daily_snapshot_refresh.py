@@ -297,9 +297,9 @@ def main():
         syms = fetch_v2_symbols()
     if args.limit:
         syms = syms[:args.limit]
-    # Skip BSE_<scrip> fallbacks — they don't trade publicly with that name
-    syms = [s for s in syms if not s.startswith('BSE_') and not (s.startswith('BSE') and s[3:].isdigit())]
-    print(f'[INFO] Processing {len(syms)} symbols (BSE_<scrip> fallbacks skipped)')
+    # BSE-prefixed symbols (BSE500013, BSE_501242) are processed via the
+    # numeric-scrip-code fallback in fetch_quote_v8() — 500013.BO etc.
+    print(f'[INFO] Processing {len(syms)} symbols (incl. BSE_<scrip> via numeric .BO fallback)')
 
     t0 = time.time()
     ok = no_quote = no_bundle = upload_err = skipped = 0
@@ -337,6 +337,20 @@ def main():
     print(f'  Skipped recent   : {skipped}')
     print(f'  Exceptions       : {exception_count}')
     print(f'  Elapsed          : {time.time()-t0:.1f}s')
+
+    # Sprint 2: push price/mcap/PE back to stock_master table so search,
+    # screener, sector heatmap all pick up the fresh data. Without this the
+    # snapshot lives only in bundle JSONs and the app's table queries stay stale.
+    print()
+    print('=' * 60)
+    print('[INFO] Syncing snapshots to stock_master table...')
+    try:
+        import sync_snapshot_to_stock_master  # type: ignore
+        sync_snapshot_to_stock_master.main()
+    except ImportError:
+        print('[WARN] sync_snapshot_to_stock_master.py not found in path — skipping sync')
+    except Exception as e:
+        print(f'[ERR] sync failed: {e}', file=sys.stderr)
 
 
 if __name__ == '__main__':

@@ -54,14 +54,21 @@ INDICES = [
 
 
 def fetch_top_symbols(limit: int = 100) -> list[str]:
+    """Top-N stocks by market cap, with the same filters as the shareholding
+    cron: drop NULL mcap, drop BSE-only scrip codes, drop garbage mcap rows.
+    Yahoo `.NS` endpoint returns 404 for those — wasted requests."""
     res = (
         sb.table("stock_master")
-        .select("symbol")
+        .select("symbol,market_cap_cr")
+        .not_.is_("market_cap_cr", "null")
+        .lt("market_cap_cr", 10_000_000)
         .order("market_cap_cr", desc=True)
-        .limit(limit)
+        .limit(limit * 2)
         .execute()
     )
-    return [r["symbol"] + ".NS" for r in (res.data or [])]
+    rows = res.data or []
+    clean = [r["symbol"] for r in rows if not r["symbol"].startswith("BSE")]
+    return [s + ".NS" for s in clean[:limit]]
 
 
 def fetch_intraday(yahoo_sym: str) -> dict | None:

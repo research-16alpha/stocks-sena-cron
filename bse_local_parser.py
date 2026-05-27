@@ -356,7 +356,14 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     tax = fnum('TaxExpense', p)
     current_tax = fnum('CurrentTax', p)
     deferred_tax = fnum('DeferredTax', p)
-    net_profit = fnum('ProfitLossForPeriod', p) or fnum('ProfitLossForPeriodFromContinuingOperations', p) or fnum('NetProfit', p)
+    # Banks file under ProfitLossFromOrdinaryActivitiesAfterTax instead of
+    # ProfitLossForPeriod. Add that as a fallback so net_profit isn't 0 for banks.
+    net_profit = (
+        fnum('ProfitLossForPeriod', p)
+        or fnum('ProfitLossForPeriodFromContinuingOperations', p)
+        or fnum('NetProfit', p)
+        or fnum('ProfitLossFromOrdinaryActivitiesAfterTax', p)
+    )
     eps_basic = fnum('BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations', p) or fnum('BasicEarningsLossPerShareFromContinuingOperations', p) or fnum('BasicEPSBeforeExtraordinaryItems', p)
     eps_diluted = fnum('DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations', p) or fnum('DilutedEarningsLossPerShareFromContinuingOperations', p) or fnum('DilutedEPSBeforeExtraordinaryItems', p)
     exceptional = fnum('ExceptionalItemsBeforeTax', p) or fnum('ExceptionalItems', p)

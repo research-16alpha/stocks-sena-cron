@@ -386,18 +386,25 @@ def process_symbol(session: requests.Session, symbol: str) -> str:
 
 
 def fetch_top_symbols(limit: int) -> list[str]:
-    """Top-N stocks by market cap, excluding BSE-only unmapped scrip codes
-    (BSE543765 etc. — NSE shareholding endpoint returns nothing for them)."""
-    # Pull more than `limit` to compensate for filtered rows
+    """Top-N stocks by market cap, with sanity filters:
+    - excludes BSE-only unmapped scrip codes (BSE543765 etc.)
+    - excludes garbage mcap rows (MOSERBAER etc. with 154,348,596,900 Cr)
+      where ceiling = 10 million Cr (real ceiling: RELIANCE ~1.8M Cr)
+    """
     res = (
         sb.table("stock_master")
-        .select("symbol")
+        .select("symbol,market_cap_cr")
         .order("market_cap_cr", desc=True)
         .limit(limit * 3)
         .execute()
     )
     rows = res.data or []
-    clean = [r["symbol"] for r in rows if not r["symbol"].startswith("BSE")]
+    clean = [
+        r["symbol"] for r in rows
+        if not r["symbol"].startswith("BSE")
+        and r.get("market_cap_cr") is not None
+        and r["market_cap_cr"] < 10_000_000  # 10M Cr ceiling — kills bad data
+    ]
     return clean[:limit]
 
 

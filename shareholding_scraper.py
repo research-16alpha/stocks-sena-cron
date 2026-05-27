@@ -385,27 +385,34 @@ def process_symbol(session: requests.Session, symbol: str) -> str:
     return f"{symbol}: +{len(new_periods)} periods → {new_periods[0]} ... {new_periods[-1]}"
 
 
-def fetch_top_symbols(limit: int) -> list[str]:
-    """Top-N stocks by market cap, with sanity filters:
-    - excludes BSE-only unmapped scrip codes (BSE543765 etc.)
-    - excludes garbage mcap rows (MOSERBAER etc. with 154,348,596,900 Cr)
-      where ceiling = 10 million Cr (real ceiling: RELIANCE ~1.8M Cr)
-    """
-    res = (
-        sb.table("stock_master")
-        .select("symbol,market_cap_cr")
-        .order("market_cap_cr", desc=True)
-        .limit(limit * 3)
-        .execute()
-    )
-    rows = res.data or []
-    clean = [
-        r["symbol"] for r in rows
-        if not r["symbol"].startswith("BSE")
-        and r.get("market_cap_cr") is not None
-        and r["market_cap_cr"] < 10_000_000  # 10M Cr ceiling — kills bad data
-    ]
-    return clean[:limit]
+def fetch_symbols(limit: int = 0) -> list[str]:
+    """All non-BSE symbols from stock_master, alphabetical order.
+    The NSE master endpoint returns nothing for BSE-only scrip codes
+    (BSE543765 etc.) so we filter those out — everything else gets scraped
+    regardless of market cap."""
+    out: list[str] = []
+    offset = 0
+    while True:
+        res = (
+            sb.table("stock_master")
+            .select("symbol")
+            .order("symbol")
+            .range(offset, offset + 999)
+            .execute()
+        )
+        batch = res.data or []
+        if not batch:
+            break
+        for r in batch:
+            sym = r["symbol"]
+            if not sym.startswith("BSE"):
+                out.append(sym)
+        if len(batch) < 1000:
+            break
+        offset += 1000
+        if limit and len(out) >= limit:
+            break
+    return out[:limit] if limit else out
 
 
 def main():
@@ -413,7 +420,11 @@ def main():
     if only_symbol:
         symbols = [only_symbol]
     else:
-        symbols = fetch_top_symbols(200)
+        # No mcap-based prioritisation — just iterate all non-BSE symbols.
+        # Each run can process up to MAX_PER_RUN; the runner's 240-min timeout
+        # acts as the hard ceiling.
+        max_n = int(os.environ.get("MAX_PER_RUN", "0")) or 0
+        symbols = fetch_symbols(max_n)
 
     session = warm_session()
     print(f"[shp] processing {len(symbols)} stocks")

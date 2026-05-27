@@ -1,21 +1,26 @@
 """
 bulk_deals_scraper.py
 =====================
-DAILY cron - scrapes NSE block + bulk deals (last ~7 days).
+DAILY cron - fetches NSE bulk + block deals from NSE archives.
 Runs at 6 PM IST after NSE publishes EOD reports.
 
-Source endpoints (public JSON, cookie warm-up):
-  - https://www.nseindia.com/api/historical/equities/bulk-deals?from=...&to=...
-  - https://www.nseindia.com/api/historical/equities/block-deals?from=...&to=...
+Sources (static CSVs, no bot protection):
+  - https://nsearchives.nseindia.com/content/equities/bulk.csv   (today's bulk)
+  - https://nsearchives.nseindia.com/content/equities/block.csv  (today's block)
+
+Was previously using NSE's API endpoints which got blocked by Akamai WAF
+(403 from GitHub Actions IPs). The archive CSVs are static files served from
+NSE's CDN — no rate limiting, no cookies needed.
 
 Output: upsert to public.bulk_deals on (date, symbol, client_name, buy_sell).
 Powers: Bulk deals widget + StockDetail "Big trades" section.
 """
 
+import csv
+import io
 import os
 import sys
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import requests
 from supabase import create_client
@@ -24,52 +29,33 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-NSE_HOME = "https://www.nseindia.com"
-BULK_URL = "https://www.nseindia.com/api/historical/equities/bulk-deals"
-BLOCK_URL = "https://www.nseindia.com/api/historical/equities/block-deals"
+BULK_URL = "https://nsearchives.nseindia.com/content/equities/bulk.csv"
+BLOCK_URL = "https://nsearchives.nseindia.com/content/equities/block.csv"
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/report-detail/display-bulk-and-block-deals",
-    "Connection": "keep-alive",
 }
 
 
-def warm_session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(HEADERS)
-    s.get(NSE_HOME, timeout=10)
-    time.sleep(1)
-    s.get("https://www.nseindia.com/report-detail/display-bulk-and-block-deals", timeout=10)
-    time.sleep(1)
-    return s
-
-
-def fetch_deals(session: requests.Session, url: str, label: str, retries: int = 3) -> list:
-    # Last 7 days window (NSE format: DD-MM-YYYY)
-    today = datetime.now()
-    frm = (today - timedelta(days=7)).strftime("%d-%m-%Y")
-    to = today.strftime("%d-%m-%Y")
-    params = {"from": frm, "to": to}
-
-    for attempt in range(retries):
-        try:
-            r = session.get(url, params=params, timeout=30)
-            if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, dict) and "data" in data:
-                    return data["data"]
-                return data or []
-            print(f"[{label}] NSE HTTP {r.status_code} attempt {attempt + 1}", file=sys.stderr)
-        except Exception as e:
-            print(f"[{label}] fetch error: {e}", file=sys.stderr)
-        time.sleep(2 + attempt * 2)
-    return []
+def fetch_csv(url: str, label: str) -> list[dict]:
+    """Fetch and parse the NSE archive CSV. Returns list of dicts keyed by CSV header."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=30)
+        if r.status_code != 200:
+            print(f"[{label}] HTTP {r.status_code}", file=sys.stderr)
+            return []
+        text = r.text
+        # First line is header; NO RECORDS sentinel possible
+        if "NO RECORDS" in text:
+            return []
+        reader = csv.DictReader(io.StringIO(text))
+        return list(reader)
+    except Exception as e:
+        print(f"[{label}] fetch error: {e}", file=sys.stderr)
+        return []
 
 
 def parse_date(s) -> str | None:
@@ -98,40 +84,33 @@ def to_int(v):
     return int(n) if n is not None else None
 
 
-def normalize(rows: list, record_type: str) -> list[dict]:
+def normalize(rows: list[dict], record_type: str) -> list[dict]:
+    """NSE archive CSV columns:
+       Date,Symbol,Security Name,Client Name,Buy/Sell,
+       Quantity Traded,Trade Price / Wght. Avg. Price,Remarks
+    """
     out = []
     seen: set[tuple] = set()
     for r in rows:
         if not isinstance(r, dict):
             continue
-        symbol = (r.get("symbol") or r.get("BD_SYMBOL") or "").strip()
-        if not symbol:
+        symbol = (r.get("Symbol") or "").strip()
+        if not symbol or symbol == "NO RECORDS":
             continue
-        date_iso = parse_date(
-            r.get("date")
-            or r.get("BD_DT_DATE")
-            or r.get("BD_TIMESTAMP")
-        )
+        date_iso = parse_date(r.get("Date"))
         if not date_iso:
             continue
-        client = (
-            r.get("clientName")
-            or r.get("BD_CLIENT_NAME")
-            or ""
-        ).strip() or None
-        bs_raw = (
-            r.get("buySell")
-            or r.get("BD_BUY_SELL")
-            or ""
-        ).strip().upper()
+        client = (r.get("Client Name") or "").strip() or None
+        bs_raw = (r.get("Buy/Sell") or "").strip().upper()
         if bs_raw.startswith("B"):
             bs = "BUY"
         elif bs_raw.startswith("S"):
             bs = "SELL"
         else:
             continue
-        qty = to_int(r.get("quantityTraded") or r.get("BD_QTY_TRD"))
-        price = to_num(r.get("watp") or r.get("BD_TP_WATP") or r.get("price") or r.get("BD_TP"))
+        qty = to_int(r.get("Quantity Traded"))
+        price_field = r.get("Trade Price / Wght. Avg. Price") or r.get("Trade Price/Wght. Avg. Price")
+        price = to_num(price_field)
         trade_value_cr = round(qty * price / 1e7, 2) if (qty and price) else None
 
         key = (date_iso, symbol, client or "", bs)
@@ -141,7 +120,7 @@ def normalize(rows: list, record_type: str) -> list[dict]:
         out.append({
             "date": date_iso,
             "symbol": symbol,
-            "security_name": (r.get("securityName") or r.get("BD_SCRIP_NAME") or "").strip() or None,
+            "security_name": (r.get("Security Name") or "").strip() or None,
             "client_name": client,
             "buy_sell": bs,
             "record_type": record_type,
@@ -153,11 +132,9 @@ def normalize(rows: list, record_type: str) -> list[dict]:
 
 
 def main():
-    session = warm_session()
-
-    bulk = fetch_deals(session, BULK_URL, "bulk")
-    block = fetch_deals(session, BLOCK_URL, "block")
-    print(f"[deals] NSE returned bulk={len(bulk)} block={len(block)}")
+    bulk = fetch_csv(BULK_URL, "bulk")
+    block = fetch_csv(BLOCK_URL, "block")
+    print(f"[deals] NSE archive returned bulk={len(bulk)} block={len(block)}")
 
     normalized = normalize(bulk, "bulk") + normalize(block, "block")
     if not normalized:

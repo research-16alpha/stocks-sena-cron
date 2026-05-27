@@ -295,47 +295,37 @@ def parse_xbrl(xbrl_bytes: bytes) -> dict | None:
     return {"holders": holders, "total_shares": total_shares, "num_shareholders": num_shareholders}
 
 
-def latest_stored_period(symbol: str) -> str | None:
+def stored_periods(symbol: str) -> set[str]:
+    """All periods already in shareholding_periods for this symbol."""
     res = (
         sb.table("shareholding_periods")
         .select("period")
         .eq("symbol", symbol)
-        .order("period", desc=True)
-        .limit(1)
         .execute()
     )
-    rows = res.data or []
-    return rows[0]["period"] if rows else None
+    return {r["period"] for r in (res.data or [])}
 
 
-def process_symbol(session: requests.Session, symbol: str) -> str:
-    """Returns status string for logging."""
-    master = fetch_master(session, symbol)
-    if not master:
-        return f"{symbol}: no master data"
-    latest = master[0]
-    period_iso = parse_nse_date(latest.get("date"))
+def _persist_one_filing(symbol: str, filing: dict, session: requests.Session) -> str | None:
+    """Fetch + parse + upsert one filing entry. Returns short status string."""
+    period_iso = parse_nse_date(filing.get("date"))
     if not period_iso:
-        return f"{symbol}: bad period date {latest.get('date')}"
-    xbrl_url = latest.get("xbrl")
+        return None
+    xbrl_url = filing.get("xbrl")
     if not xbrl_url:
-        return f"{symbol}: no xbrl link"
-
-    stored = latest_stored_period(symbol)
-    if stored == period_iso:
-        return f"{symbol}: already have {period_iso}"
+        return None
 
     xb = fetch_xbrl(session, xbrl_url)
     if not xb:
-        return f"{symbol}: xbrl fetch failed"
+        return f"{period_iso} xbrl fail"
     parsed = parse_xbrl(xb)
     if not parsed:
-        return f"{symbol}: xbrl parse failed"
+        return f"{period_iso} parse fail"
 
-    promoter_pct = to_num(latest.get("pr_and_prgrp"))
-    public_pct = to_num(latest.get("public_val"))
-    emp_trust = to_num(latest.get("employeeTrusts"))
-    filing_date = parse_nse_date(latest.get("submissionDate"))
+    promoter_pct = to_num(filing.get("pr_and_prgrp"))
+    public_pct = to_num(filing.get("public_val"))
+    emp_trust = to_num(filing.get("employeeTrusts"))
+    filing_date = parse_nse_date(filing.get("submissionDate"))
 
     sb.table("shareholding_periods").upsert({
         "symbol": symbol,
@@ -349,10 +339,8 @@ def process_symbol(session: requests.Session, symbol: str) -> str:
         "num_shareholders": parsed.get("num_shareholders"),
     }, on_conflict="symbol,period").execute()
 
-    # Holders — batch upsert
     holders = parsed.get("holders") or []
     if holders:
-        # Clean dedupe + add symbol/period
         seen = set()
         batch = []
         for h in holders:
@@ -365,9 +353,36 @@ def process_symbol(session: requests.Session, symbol: str) -> str:
                 batch, on_conflict="symbol,period,category,holder_name"
             ).execute()
         except Exception as e:
-            return f"{symbol}: {period_iso} holder upsert FAILED: {e}"
+            return f"{period_iso} holder upsert fail: {e}"
 
-    return f"{symbol}: {period_iso} → {len(holders)} holders"
+    return f"{period_iso}+{len(holders)}h"
+
+
+def process_symbol(session: requests.Session, symbol: str) -> str:
+    """
+    Process every filing NSE has for this symbol that isn't already in our DB.
+    NSE master returns ~8-12 quarters of history per stock — backfilling this
+    once gives us 2-3 years of pattern history without a separate script.
+    """
+    master = fetch_master(session, symbol)
+    if not master:
+        return f"{symbol}: no master data"
+
+    already = stored_periods(symbol)
+    new_periods: list[str] = []
+    for filing in master:
+        period_iso = parse_nse_date(filing.get("date"))
+        if not period_iso or period_iso in already:
+            continue
+        status = _persist_one_filing(symbol, filing, session)
+        if status:
+            new_periods.append(status)
+        time.sleep(0.4)  # Small per-XBRL pause; NSE rate-limit friendly
+
+    if not new_periods:
+        latest = parse_nse_date(master[0].get("date")) if master else "—"
+        return f"{symbol}: up-to-date (latest {latest})"
+    return f"{symbol}: +{len(new_periods)} periods → {new_periods[0]} ... {new_periods[-1]}"
 
 
 def fetch_top_symbols(limit: int) -> list[str]:

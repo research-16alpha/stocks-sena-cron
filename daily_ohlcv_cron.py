@@ -72,9 +72,11 @@ def fetch_symbols(limit: int = 0) -> list[str]:
 
 
 def _fetch_ohlcv_single(yahoo_ticker: str) -> dict | None:
-    """Fetch 5y OHLCV for ONE specific Yahoo ticker form. Returns parsed bundle or None."""
+    """Fetch full history OHLCV for ONE Yahoo ticker. Returns parsed bundle or None.
+    Was 5y, which was overwriting the Kite 7y backfill every day. Now 15y so
+    "5Y" / "MAX" timeframes in the app show real depth."""
     url = f"{YAHOO_BASE}/{yahoo_ticker}"
-    params = {"interval": "1d", "range": "5y"}
+    params = {"interval": "1d", "range": "15y"}
     try:
         r = requests.get(url, params=params, headers=HEADERS, timeout=15)
         if r.status_code != 200:

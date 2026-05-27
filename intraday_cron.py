@@ -49,7 +49,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 INDICES = [
     "^NSEI", "^BSESN", "^NSEBANK", "^CNXIT", "^CNXPHARMA",
     "^CNXFMCG", "^CNXAUTO", "^CNXMETAL", "INR=X",
-    "^CNXFINANCE", "^CNXENERGY", "^CNXREALTY", "^CNXMEDIA",
+    "^CNXFIN", "^CNXENERGY", "^CNXREALTY", "^CNXMEDIA",  # ^CNXFIN — Yahoo delisted ^CNXFINANCE 2026-05
 ]
 
 

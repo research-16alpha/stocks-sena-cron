@@ -32,15 +32,27 @@ sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 BUCKET = "daily"
 
 
-def fetch_symbols(limit: int = 200) -> list[str]:
-    res = (
-        sb.table("stock_master")
-        .select("symbol")
-        .order("market_cap_cr", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    return [r["symbol"] for r in (res.data or [])]
+def fetch_symbols(limit: int = 0) -> list[str]:
+    """Full universe of stock_master for breadth calc.
+    Was limited to 200 — that made breadth % meaningless. Now uses entire
+    universe (top-down by mcap, NULLs last) for proper market-wide signal.
+    """
+    syms = []
+    offset = 0
+    while True:
+        q = (sb.table("stock_master").select("symbol")
+             .order("market_cap_cr", desc=True, nullsfirst=False)
+             .range(offset, offset + 999))
+        res = q.execute()
+        batch = res.data or []
+        if not batch: break
+        syms.extend(r["symbol"] for r in batch if r.get("symbol"))
+        if len(batch) < 1000: break
+        offset += 1000
+        if limit and len(syms) >= limit:
+            syms = syms[:limit]
+            break
+    return syms
 
 
 def fetch_bars(symbol: str) -> list[list] | None:

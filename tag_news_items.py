@@ -39,6 +39,30 @@ H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 DENY_SYMBOLS = {'M', 'A', 'I', 'IT', 'CG', 'NA', 'IPO', 'NSE', 'BSE', 'RBI',
                 'SEBI', 'GST', 'FY', 'YTD', 'EPS', 'PB', 'PE', 'AI'}
 
+# Macro/RBI headline keywords. When ANY of these match the headline+summary
+# (case-insensitive), we set news_items.category. Powers the MACRO tab in the
+# Feed screen; the client-side fallback in useNews.ts mirrors this list.
+RBI_KEYWORDS = ('rbi', 'monetary policy', 'repo rate', 'reverse repo', 'mpc ')
+MACRO_KEYWORDS = (
+    'inflation', 'cpi ', 'wpi ', 'iip ', 'gdp ',
+    'fiscal deficit', 'current account', 'forex reserves',
+    'rupee', 'inr ', 'dollar', 'usdinr', 'usd/inr',
+    'fii ', 'fpi ', 'dii ', 'foreign portfolio',
+    'crude', 'brent', 'oil price',
+    'sebi ', 'finance ministry', 'union budget', 'gst council', 'gst ',
+)
+
+
+def derive_category(headline: str, summary: str) -> str | None:
+    text = (headline + ' ' + (summary or '')).lower()
+    if not text.strip():
+        return None
+    if any(kw in text for kw in RBI_KEYWORDS):
+        return 'rbi'
+    if any(kw in text for kw in MACRO_KEYWORDS):
+        return 'macro'
+    return None
+
 # Company name suffixes to strip before matching
 SUFFIX_RX = re.compile(
     r'\s+(ltd\.?|limited|industries|company|corporation|corp\.?|inc\.?|pvt\.?|private|holdings?|group|enterprises)\.?\s*$',
@@ -103,7 +127,7 @@ def fetch_untagged_news(limit: int = 0) -> list:
     offset = 0
     while True:
         r = requests.get(
-            f'{URL}/rest/v1/news_items?select=id,headline,summary&order=published_at.desc.nullslast',
+            f'{URL}/rest/v1/news_items?select=id,headline,summary,category&order=published_at.desc.nullslast',
             headers={**H, 'Range': f'{offset}-{offset+999}'}, timeout=30,
         )
         batch = r.json()
@@ -118,6 +142,23 @@ def fetch_untagged_news(limit: int = 0) -> list:
             break
         offset += 1000
     return out
+
+
+def patch_categories(items_with_cat: list) -> int:
+    """PATCH news_items.category for items where we derived a non-null bucket."""
+    if not items_with_cat:
+        return 0
+    ok = 0
+    for it in items_with_cat:
+        r = requests.patch(
+            f'{URL}/rest/v1/news_items?id=eq.{it["id"]}',
+            headers={**H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
+            data=json.dumps({'category': it['category']}),
+            timeout=15,
+        )
+        if r.status_code in (200, 204):
+            ok += 1
+    return ok
 
 
 def tag_one(item: dict, stock_list: list) -> list:
@@ -181,8 +222,18 @@ def main():
 
     # Batch insert
     pending = []
+    cat_pending = []
+    cats_set = 0
     BATCH = 200
     for i, item in enumerate(news, 1):
+        # Compute category from headline + summary (independent of stock tags)
+        cat = derive_category(item.get('headline') or '', item.get('summary') or '')
+        if cat and not item.get('category'):
+            cat_pending.append({'id': item['id'], 'category': cat})
+            if len(cat_pending) >= 50:
+                cats_set += patch_categories(cat_pending)
+                cat_pending = []
+
         tags = tag_one(item, stocks)
         if not tags:
             items_skipped += 1
@@ -194,18 +245,21 @@ def main():
             pending = []
         if i % 100 == 0:
             print(f'  [{i}/{len(news)}] tagged={items_tagged} skipped={items_skipped} '
-                  f'tags={total_tags + len(pending)}')
+                  f'tags={total_tags + len(pending)} cats={cats_set + len(cat_pending)}')
 
     if pending:
         total_tags += insert_tags(pending)
+    if cat_pending:
+        cats_set += patch_categories(cat_pending)
 
     print()
     print('-' * 60)
-    print(f'  Items scanned    : {len(news)}')
-    print(f'  Items with tags  : {items_tagged}')
-    print(f'  Items skipped    : {items_skipped}')
-    print(f'  Total tags added : {total_tags}')
-    print(f'  Elapsed          : {time.time()-t0:.1f}s')
+    print(f'  Items scanned       : {len(news)}')
+    print(f'  Items with tags     : {items_tagged}')
+    print(f'  Items skipped       : {items_skipped}')
+    print(f'  Total tags added    : {total_tags}')
+    print(f'  Categories set      : {cats_set}')
+    print(f'  Elapsed             : {time.time()-t0:.1f}s')
 
 
 if __name__ == '__main__':

@@ -386,14 +386,19 @@ def process_symbol(session: requests.Session, symbol: str) -> str:
 
 
 def fetch_top_symbols(limit: int) -> list[str]:
+    """Top-N stocks by market cap, excluding BSE-only unmapped scrip codes
+    (BSE543765 etc. — NSE shareholding endpoint returns nothing for them)."""
+    # Pull more than `limit` to compensate for filtered rows
     res = (
         sb.table("stock_master")
         .select("symbol")
         .order("market_cap_cr", desc=True)
-        .limit(limit)
+        .limit(limit * 3)
         .execute()
     )
-    return [r["symbol"] for r in (res.data or [])]
+    rows = res.data or []
+    clean = [r["symbol"] for r in rows if not r["symbol"].startswith("BSE")]
+    return clean[:limit]
 
 
 def main():

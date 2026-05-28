@@ -371,6 +371,10 @@ def main():
     ap.add_argument('--historical', action='store_true',
                     help='Also pull the legacy corporates-financial-results archive '
                          '(~2023-2024) to fill pre-2025 quarters. Pair with --since 2022-01-01.')
+    ap.add_argument('--all', action='store_true', dest='all_syms',
+                    help='Process the FULL fundamentals-v2 universe (banks + non-banks), '
+                         'skipping bank detection. Upgrades non-bank quarters from medallion '
+                         'to primary XBRL. Heavy run (~4.5k symbols) — use as a one-shot.')
     args = ap.parse_args()
 
     use_cache = args.use_cache and not args.syms and os.path.exists(BANK_CACHE)
@@ -396,8 +400,9 @@ def main():
 
     session = prime_nse_session()
 
-    # When scanning the full universe, filter to banks first (cheap bundle check)
-    if not args.syms and not use_cache:
+    # When scanning the full universe, filter to banks first (cheap bundle check).
+    # --all skips this filter and processes every symbol (banks + non-banks).
+    if not args.syms and not use_cache and not args.all_syms:
         print('[INFO] Detecting bank bundles ...')
         banks = []
 

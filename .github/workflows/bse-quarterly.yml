@@ -1,0 +1,45 @@
+name: BSE Quarterly (primary source, BSE-only + NSE-gap stocks)
+
+# Pulls recent quarterly results straight from BSE's results XBRL
+# (Corp_FinanceResult_ng → IFIndAs iXBRL) for stocks NSE's integrated-filing
+# feed does not carry: BSE-only smallcaps and NSE names absent from NSE's API.
+#
+# Each run first rebuilds the exchange-identifier master (NSE EQUITY_L + full
+# BSE ListofScripData) so scrip codes stay fresh, then fills any active stock
+# whose latest quarter is stale. Fill-don't-clobber: never overwrites an
+# nse_integrated_filing row (NSE wins for dual-listed names). Idempotent.
+
+on:
+  schedule:
+    # Mon + Fri 9:00 UTC (2:30 PM IST). Results arrive in waves (Jan/Apr/Jul/Oct);
+    # twice-weekly keeps the stale set drained through each season.
+    - cron: '0 9 * * 1,5'
+  workflow_dispatch:
+
+jobs:
+  bse-quarterly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild exchange-identifier master (NSE + BSE, scrip codes)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python build_identifier_master.py
+
+      - name: Fill stale quarters from BSE primary source
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bse_quarterly_cron.py --stale --flagdur 6 --workers 8 --since 2024-06-30

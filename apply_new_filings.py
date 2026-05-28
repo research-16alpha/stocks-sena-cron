@@ -37,9 +37,11 @@ from typing import Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-with open('e:/Stocks sena/.supabase-service-key', 'r') as f:
-    KEY = f.read().strip()
-URL = 'https://tbeadvvkqyrhtendttrg.supabase.co'
+KEY = os.environ.get('SUPABASE_SERVICE_KEY')
+if not KEY:
+    with open('e:/Stocks sena/.supabase-service-key', 'r') as f:
+        KEY = f.read().strip()
+URL = os.environ.get('SUPABASE_URL', 'https://tbeadvvkqyrhtendttrg.supabase.co')
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
 FILINGS_DIR = os.environ.get('FILINGS_DIR', r'F:\expansion\stocks-sena\filings')

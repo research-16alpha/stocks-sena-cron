@@ -1,0 +1,32 @@
+name: Compute Derived Metrics (ROE/ROCE/book-value/ratios)
+
+# Recomputes per-stock derived metrics from each fundamentals-v2 bundle's own
+# statements and writes them to the bundle snapshot + stock_master quality
+# columns (roe_pct, roce_pct, debt_equity, pb_ratio, ev_ebitda, piotroski_score,
+# rev/profit 5y CAGR, promoter/fii/dii %, latest periods). Fill-don't-overwrite +
+# sanity-gated. Keeps the app's ratios/scorecard populated as bundles update.
+
+on:
+  schedule:
+    # Daily 13:00 UTC (6:30 PM IST) — after the day's fundamental/quarterly crons.
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compute + populate derived metrics
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_metrics.py

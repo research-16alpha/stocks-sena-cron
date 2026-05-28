@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+from datetime import date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -109,8 +110,64 @@ def pick_equity(bs):
     return None
 
 
-def compute(d):
-    """Return (metrics_dict, snapshot_patch_dict)."""
+def _qend(p):
+    try:
+        return date.fromisoformat(p)
+    except (TypeError, ValueError):
+        return None
+
+
+def ttm_flows(d):
+    """Trailing-twelve-months flow items = sum of the last 4 single-quarter rows.
+    Returns a dict of summed flows (+ basis periods), or None if we don't have 4
+    clean consecutive recent quarters. Balance-sheet items are never summed — TTM
+    is a flow concept, so equity/borrowings still come from the latest annual BS.
+
+    Guard: the 4 quarter-ends must span ~9 months (3 gaps × ~3mo); a wider span
+    means a missing quarter (e.g. the Mar-2025 holes) and we fall back to annual
+    rather than emit a wrong TTM."""
+    qr = d.get('quarterly_results') or d.get('quarterly_results_consolidated') or []
+    rows = [r for r in qr if r.get('period') and _qend(r['period'])]
+    rows.sort(key=lambda r: r['period'])
+    if len(rows) < 4:
+        return None
+    last4 = rows[-4:]
+    span = (_qend(last4[-1]['period']) - _qend(last4[0]['period'])).days
+    if not (250 <= span <= 400):           # 3 quarters apart ≈ 273d; reject gaps
+        return None
+
+    def s(*keys):
+        vals = []
+        for r in last4:
+            v = g(r, *keys)
+            if v is None:
+                return None                 # need all 4 quarters for a clean sum
+            vals.append(v)
+        return round(sum(vals), 2)
+
+    np_ttm = s('net_profit', 'pat_ordinary')
+    if np_ttm is None:
+        return None                          # net profit is the must-have
+    return {
+        'net_profit': np_ttm,
+        'sales': s('sales', 'total_income', 'revenue_from_operations'),
+        'pbt': s('pbt', 'pbt_ordinary'),
+        'finance_costs': s('finance_costs', 'interest'),
+        'operating_profit': s('operating_profit'),
+        'depreciation': s('depreciation'),
+        'period': last4[-1]['period'],
+        'periods': [r['period'] for r in last4],
+    }
+
+
+def compute(d, use_ttm=False):
+    """Return (metrics_dict, snapshot_patch_dict).
+
+    use_ttm: when True and 4 clean recent quarters exist, ROE/ROCE/EV-EBITDA use
+    trailing-twelve-month flows (net profit, PBT, finance costs, operating profit)
+    instead of the latest full-year P&L — so the ratios track the latest quarter.
+    Balance-sheet inputs (equity, borrowings) stay annual either way. Falls back to
+    annual per-field when a quarter lacks the tag, and entirely when <4 quarters."""
     bank = is_bank_bundle(d)
     bs = latest(d, 'annual_bs_consolidated', 'annual_bs', 'annual_bs_standalone')
     pl = latest(d, 'annual_pl_consolidated', 'annual_pl', 'annual_pl_standalone')
@@ -134,6 +191,23 @@ def compute(d):
     dep = g(pl, 'depreciation') or g(cf, 'depreciation_addback')
     op = g(pl, 'operating_profit')
     sales = g(pl, 'sales', 'revenue_from_operations')
+
+    # TTM override: swap full-year flows for the sum of the last 4 quarters.
+    metrics_basis = 'annual'
+    ttm = ttm_flows(d) if use_ttm else None
+    if ttm:
+        metrics_basis = 'ttm'
+        net_profit = ttm['net_profit']
+        if ttm['pbt'] is not None:
+            pbt = ttm['pbt']
+        if ttm['finance_costs'] is not None:
+            fin = ttm['finance_costs']
+        if ttm['operating_profit'] is not None:
+            op = ttm['operating_profit']
+        if ttm['sales'] is not None:
+            sales = ttm['sales']
+        if ttm['depreciation'] is not None:
+            dep = ttm['depreciation']
 
     m = {}
     snap_patch = {}
@@ -230,6 +304,9 @@ def compute(d):
         if 1 < mc < 2_000_000:
             m['market_cap_cr'] = mc
 
+    if use_ttm:
+        m['_basis'] = metrics_basis              # ignored by patch_stock_master (not a SM_COL)
+        snap_patch['metrics_basis'] = metrics_basis
     return m, snap_patch
 
 
@@ -301,22 +378,28 @@ def patch_stock_master(sym, m):
     return r.status_code in (200, 204)
 
 
-def process(sym, dry):
+def process(sym, dry, use_ttm=False):
     d = download_bundle(sym)
     if not d:
         return (sym, 'NO_BUNDLE', 0)
     raw = json.dumps(d, default=str, separators=(',', ':')).encode('utf-8')
-    m, snap_patch = compute(d)
+    m, snap_patch = compute(d, use_ttm=use_ttm)
     if not m and not snap_patch:
         return (sym, 'NO_METRICS', 0)
+    ttm = (m.get('_basis') == 'ttm')
 
     # Fill-don't-overwrite: only set a snapshot field if the existing value is
-    # missing or broken. Preserve sane existing (Screener) values.
+    # missing or broken. Preserve sane existing (Screener) values — EXCEPT when a
+    # TTM recompute is authoritative-current for roe/roce/pb, which then overwrite.
     snap = d.get('snapshot')
     s0 = snap[0] if isinstance(snap, list) and snap else (snap if isinstance(snap, dict) else None)
     changed = False
 
     def should_set(field, existing):
+        if field == 'metrics_basis':
+            return True                                        # always reflect this run's basis
+        if ttm and field in ('roe', 'roce', 'pb'):
+            return True                                        # TTM refresh wins
         if field == 'book_value':
             return existing in (None, 0, 0.0)                 # 0 = broken
         if field == 'pb':
@@ -345,11 +428,33 @@ def process(sym, dry):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--validate', type=str, default='')
+    ap.add_argument('--compare', type=str, default='',
+                    help='Print annual-vs-TTM ROE/ROCE side by side for these symbols (no writes).')
+    ap.add_argument('--ttm', action='store_true',
+                    help='Compute ROE/ROCE/EV-EBITDA from trailing-twelve-month (last 4 quarters) flows.')
     ap.add_argument('--syms', type=str, default='')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--workers', type=int, default=WORKERS)
     args = ap.parse_args()
+
+    if args.compare:
+        for sym in [s.strip().upper() for s in args.compare.split(',') if s.strip()]:
+            d = download_bundle(sym)
+            if not d:
+                print(f'{sym}: NO BUNDLE'); continue
+            ma, _ = compute(d, use_ttm=False)
+            mt, _ = compute(d, use_ttm=True)
+            tf = ttm_flows(d)
+            print(f'\n=== {sym} (bank={is_bank_bundle(d)})  basis={mt.get("_basis")} ===')
+            print(f'  ROE   annual={ma.get("roe_pct")}   TTM={mt.get("roe_pct")}')
+            print(f'  ROCE  annual={ma.get("roce_pct")}   TTM={mt.get("roce_pct")}')
+            print(f'  EV/EBITDA annual={ma.get("ev_ebitda")}   TTM={mt.get("ev_ebitda")}')
+            if tf:
+                print(f'  TTM quarters: {tf["periods"]}  net_profit_ttm={tf["net_profit"]}  sales_ttm={tf["sales"]}')
+            else:
+                print('  (no clean 4-quarter TTM — falls back to annual)')
+        return
 
     if args.validate:
         for sym in [s.strip().upper() for s in args.validate.split(',')]:
@@ -385,7 +490,7 @@ def main():
 
     def safe(s):
         try:
-            return process(s, args.dry_run)
+            return process(s, args.dry_run, use_ttm=args.ttm)
         except Exception as e:
             return (s, f'EXC:{e}', 0)
 

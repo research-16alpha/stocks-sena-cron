@@ -141,11 +141,23 @@ def main():
         print("[deals] nothing to upsert")
         return
 
+    # Final dedup on the EXACT on_conflict key across both lists. normalize()
+    # dedups bulk and block separately, so a row present in both (or NULL-client
+    # rows) can still collide within one upsert command -> Postgres 21000
+    # "ON CONFLICT DO UPDATE command cannot affect row a second time".
+    by_key: dict[tuple, dict] = {}
+    for row in normalized:
+        k = (row["date"], row["symbol"], row.get("client_name") or "", row["buy_sell"])
+        by_key[k] = row  # last write wins
+    deduped = list(by_key.values())
+    if len(deduped) != len(normalized):
+        print(f"[deals] deduped {len(normalized)} -> {len(deduped)} on conflict key")
+
     try:
         sb.table("bulk_deals").upsert(
-            normalized, on_conflict="date,symbol,client_name,buy_sell"
+            deduped, on_conflict="date,symbol,client_name,buy_sell"
         ).execute()
-        print(f"[deals] {datetime.now().isoformat()} · upserted {len(normalized)} deals")
+        print(f"[deals] {datetime.now().isoformat()} · upserted {len(deduped)} deals")
     except Exception as e:
         print(f"[deals] upsert failed: {e}", file=sys.stderr)
         sys.exit(1)

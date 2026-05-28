@@ -1,0 +1,37 @@
+name: Integrated Filing Quarterly (bank results, primary source)
+
+# Pulls recent BANK quarterly results from NSE's new "Integrated Filing
+# (Financials)" feed (INTEGRATED_FILING_BANKING_*.xml). This replaces the
+# legacy results-comparision feed used by nse-delta-quarterly, which froze at
+# Dec-2024 when SEBI switched listed companies to integrated filings.
+#
+# Banks are auto-detected from the fundamentals-v2 bundles each run. Idempotent:
+# overwrites the same quarters with identical primary-source values.
+
+on:
+  schedule:
+    # Tue/Thu/Sat 8:30 UTC (2:00 PM IST) — catches new bank result filings.
+    - cron: '30 8 * * 2,4,6'
+  workflow_dispatch:
+
+jobs:
+  bank-quarterly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Bank quarterly results from integrated filings
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python integrated_filing_quarterly.py --since 2025-01-01

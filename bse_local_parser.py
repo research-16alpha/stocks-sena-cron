@@ -322,6 +322,12 @@ def parse_annual_file(path: str) -> Optional[Dict]:
                 best_ctx = c
         period_ctx = best_ctx
 
+        # Bug 10 — Dec year-end MNCs: the period context's actual end date is the
+        # ground truth. The filename hint may say "Mar" generically; do NOT let it
+        # override a real Dec-31 (or other) period end from the XBRL context.
+        if period_ctx and contexts.get(period_ctx, {}).get('end'):
+            fy_end = contexts[period_ctx]['end']
+
         # Instant: prefer match on fy_end; else latest non-dim instant
         if fy_end:
             instant_ctx = pick_top_level_instant(contexts, fy_end)
@@ -421,6 +427,15 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     # Bank detection: presence of Deposits or InterestEarned signals a bank.
     # NBFC detection: presence of `Loans` BS tag with substantial size + no Deposits.
     is_bank_filing = (interest_earned is not None) or (fnum('Deposits', i) is not None and fnum('Deposits', i) > 0)
+
+    # Bug 8 — bank "sales": banks don't file RevenueFromOperations. Total income =
+    # InterestEarned + OtherIncome. Use it as the revenue/sales fallback when the
+    # standard revenue tag is absent. `Income` (total income tag) already covers
+    # most filers; this catches banks that omit even that tag.
+    if is_bank_filing and revenue is None:
+        if interest_earned is not None or other_income is not None:
+            revenue = (interest_earned or 0) + (other_income or 0)
+            opm_pct = (ebitda / revenue * 100) if (ebitda is not None and revenue) else None
 
     # ─── Balance Sheet (instant) ───
     total_assets = fnum('Assets', i)
@@ -540,7 +555,14 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     cfi = fnum('CashFlowsFromUsedInInvestingActivities', p)
     cff = fnum('CashFlowsFromUsedInFinancingActivities', p)
     cfo_pre_wc = fnum('CashFlowsFromUsedInOperations', p)
-    capex_ppe = fnum('PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities', p)
+    # Bug 9 — capex PPE: the primary tag is missing in 10-15% of filings.
+    # Fall back through alternative cash-flow capex tags before giving up.
+    capex_ppe = (
+        fnum('PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities', p)
+        or fnum('CashOutflowForCapitalExpenditure', p)
+        or fnum('PaymentsForPurchaseOfPropertyPlantAndEquipment', p)
+        or fnum('AcquisitionsOfPropertyPlantAndEquipment', p)
+    )
     capex_intang = fnum('PurchaseOfIntangibleAssetsClassifiedAsInvestingActivities', p)
     capex_intang_dev = fnum('PurchaseOfIntangibleAssetsUnderDevelopment', p)
     capex_total = None
@@ -931,6 +953,12 @@ def parse_quarterly_file(path: str) -> Optional[Dict]:
         nii = interest_earned - interest_expended
 
     is_bank_filing = (interest_earned is not None) or (deposits is not None and deposits > 0)
+
+    # Bug 8 — bank quarterly "sales": fall back to total income
+    # (InterestEarned + OtherIncome) when the standard revenue tag is absent.
+    if is_bank_filing and revenue is None:
+        if interest_earned is not None or other_income is not None:
+            revenue = (interest_earned or 0) + (other_income or 0)
 
     ebitda = None
     if pbt is not None:

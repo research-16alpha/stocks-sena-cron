@@ -1,0 +1,43 @@
+name: BSE Gap Backfill (heal internal quarter holes)
+
+# Closes the blind spot the --stale cron can't see: a stock can be fully current
+# at the LATEST quarter yet be missing one in the MIDDLE (e.g. BSE was down the
+# day it filed Q2-2024). --stale only checks the latest period, and the daily
+# delta's 1-year window can't reach old holes. This scans the full expected
+# Jun/Sep/Dec/Mar sequence per stock, finds internal gaps, and re-pulls full
+# history (fill-don't-clobber) to heal them. Monthly is plenty — recent holes
+# already self-heal via the daily/weekly crons.
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'   # 1st of each month, 06:00 UTC (11:30 AM IST)
+  workflow_dispatch:
+
+jobs:
+  gap-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Refresh scrip-code map
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python build_identifier_master.py
+      - name: Detect + heal internal quarter holes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bse_gap_backfill.py --min-hole 2023-01-01 --workers 8
+      - name: Recompute derived metrics (TTM)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_metrics.py --ttm

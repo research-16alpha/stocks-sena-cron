@@ -60,7 +60,7 @@ def main():
         off += 1000
         if len(b) < 1000:
             break
-    print(f'[history] {len(rows)} active stocks → stock_metrics_history @ {today}')
+    print(f'[history] {len(rows)} active stocks -> stock_metrics_history @ {today}')
 
     hist = []
     for r in rows:

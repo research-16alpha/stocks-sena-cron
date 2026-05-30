@@ -43,3 +43,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python bse_quarterly_cron.py --stale --flagdur 6 --workers 8 --since 2024-06-30
+
+      # M2: recompute so latest_quarter_period + TTM ratios reflect the new quarters
+      - name: Recompute derived metrics (TTM)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_metrics.py --ttm

@@ -67,6 +67,7 @@ XBRL_BSEFIN_FACT_RE = re.compile(
 XBRL_BSEFIN_CTX_RE = re.compile(r"""contextRef=['"]([^'"]+)['"]""")
 XBRL_BSEFIN_SCALE_RE = re.compile(r"""scale=['"](-?\d+)['"]""")
 XBRL_BSEFIN_SIGN_RE = re.compile(r"""sign=['"]([-+])['"]""")
+XBRL_BSEFIN_UNIT_RE = re.compile(r"""unitRef=['"]([^'"]+)['"]""")
 
 # Context detection
 CTX_DIM_EXPLICIT_RE = re.compile(
@@ -198,8 +199,22 @@ def parse_xbrl_text(text: str) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dic
             except (ValueError, TypeError):
                 facts[tag][ctx] = raw
         else:
-            # No scale: legacy XML, raw rupees as-is. to_crores() handles magnitude.
-            facts[tag][ctx] = raw
+            # No scale: legacy in-bse-fin/in-capmkt XML. These file monetary values
+            # as ABSOLUTE rupees (unitRef="INR"), so they must be /1e7 to reach Cr.
+            # The old to_crores() magnitude heuristic (>1e6) silently failed for small
+            # line items in small companies (e.g. STANPACK net profit 369000 rupees =
+            # 0.0369 Cr stayed 369000). unitRef is the reliable signal: "INR" = currency
+            # amount → /1e7; "INRPerShare" (EPS/face value) and ratios pass through.
+            unit_m = XBRL_BSEFIN_UNIT_RE.search(attrs)
+            unit = (unit_m.group(1) if unit_m else '').strip()
+            if unit == 'INR':
+                try:
+                    v = float(raw.replace(',', '').replace('(', '-').replace(')', ''))
+                    facts[tag][ctx] = str(v / 1e7)
+                except (ValueError, TypeError):
+                    facts[tag][ctx] = raw
+            else:
+                facts[tag][ctx] = raw
 
     return facts, contexts
 

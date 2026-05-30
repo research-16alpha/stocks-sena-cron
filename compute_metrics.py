@@ -182,6 +182,24 @@ def compute(d, use_ttm=False):
     price = g(snap, 'current_price', 'price')
     face = g(snap, 'face_value') or 10.0
 
+    # H9: a price is only valid for VALUATION ratios (pb / ev_ebitda / market_cap)
+    # if it is (a) reasonably fresh and (b) sits over reasonably fresh fundamentals.
+    # Otherwise we'd emit fake "live" ratios — e.g. a 2026 price over a 2006 book
+    # value (WYETH pb=12.47). Stale/illiquid names (Yahoo NO_QUOTE freezes price)
+    # get pb/ev/mcap left null rather than wrong. ROE/ROCE/book_value don't use
+    # price and still compute. val_price=None disables only the price-derived set.
+    _fd = snap.get('fetched_date') or snap.get('fetched_at') or snap.get('date')
+    _latest_ann = (pl or {}).get('period')
+    price_fresh = False
+    if _fd:
+        try:
+            from datetime import date as _date
+            price_fresh = (_date.today() - _date.fromisoformat(str(_fd)[:10])).days <= 7
+        except Exception:
+            price_fresh = False
+    ann_fresh = bool(_latest_ann and str(_latest_ann)[:10] >= '2024-03-31')
+    val_price = price if (price_fresh and ann_fresh) else None
+
     total_equity = pick_equity(bs)
     equity_capital = g(bs, 'equity_capital')
     borrowings = g(bs, 'borrowings')
@@ -231,9 +249,9 @@ def compute(d, use_ttm=False):
             m['roe_pct'] = roe
             snap_patch['roe'] = roe
 
-    # P/B (gate 0..5000)
-    if price and bvps and bvps > 0:
-        pb = sane(round(price / bvps, 2), 0, 5000)
+    # P/B (gate 0..5000) — only on a fresh price over fresh fundamentals (H9)
+    if val_price and bvps and bvps > 0:
+        pb = sane(round(val_price / bvps, 2), 0, 5000)
         if pb is not None:
             snap_patch['pb'] = pb
             m['pb_ratio'] = pb
@@ -257,9 +275,9 @@ def compute(d, use_ttm=False):
             de = sane(round(borrowings / total_equity, 2), 0, 50)
             if de is not None:
                 m['debt_equity'] = de
-        # EV/EBITDA (needs sane mcap + ebitda; gate 0..200)
+        # EV/EBITDA — only when the price (hence mcap) is fresh over fresh fundamentals (H9)
         ebitda = (op + dep) if (op is not None and dep is not None) else None
-        mcap = g(snap, 'market_cap_cr')
+        mcap = g(snap, 'market_cap_cr') if val_price else None
         if (ebitda and ebitda > 0 and mcap and 1 < mcap < 2_000_000 and borrowings is not None):
             ev = mcap + borrowings - cash
             evb = sane(round(ev / ebitda, 2), 0, 200)
@@ -302,9 +320,10 @@ def compute(d, use_ttm=False):
     if qr:
         m['latest_quarter_period'] = qr[-1].get('period')
 
-    # market cap recompute (sanity-gated)
-    if equity_capital and face and price:
-        mc = round(equity_capital * price / face, 2)
+    # market cap recompute — only from a fresh price (H9; avoids reviving a stale
+    # mcap for illiquid/delisted names whose Yahoo quote is frozen)
+    if equity_capital and face and val_price:
+        mc = round(equity_capital * val_price / face, 2)
         if 1 < mc < 2_000_000:
             m['market_cap_cr'] = mc
 

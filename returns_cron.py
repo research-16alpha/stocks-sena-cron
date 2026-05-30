@@ -40,8 +40,18 @@ PERIODS = {
 
 
 def fetch_symbols() -> list[str]:
-    res = sb.table("stock_master").select("symbol").execute()
-    return [r["symbol"] for r in (res.data or [])]
+    # PostgREST caps a single select at 1000 rows — paginate, else returns were
+    # only ever computed for the first 1000 stocks (the 26%-coverage bug).
+    out: list[str] = []
+    step, off = 1000, 0
+    while True:
+        res = sb.table("stock_master").select("symbol").range(off, off + step - 1).execute()
+        batch = [r["symbol"] for r in (res.data or [])]
+        out += batch
+        if len(batch) < step:
+            break
+        off += step
+    return out
 
 
 def fetch_bars(symbol: str) -> list[list] | None:
@@ -87,37 +97,50 @@ def compute_returns(bars: list[list]) -> dict | None:
     return out
 
 
+def _patch(sym: str, updates: dict) -> bool:
+    # Direct REST PATCH (thread-safe, unlike sharing the supabase client across threads).
+    import urllib.parse
+    url = f"{SUPABASE_URL}/rest/v1/stock_master?symbol=eq.{urllib.parse.quote(sym)}"
+    h = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+         "Content-Type": "application/json", "Prefer": "return=minimal"}
+    try:
+        r = requests.patch(url, headers=h, data=json.dumps(updates), timeout=20)
+        return r.status_code in (200, 204)
+    except Exception:
+        return False
+
+
 def main():
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     symbols = fetch_symbols()
-    print(f"[INFO] Returns compute over {len(symbols)} stocks")
+    print(f"[INFO] Returns compute over {len(symbols)} stocks (parallel)")
 
-    ok = 0
-    skipped = 0
-    failed = []
-
-    for i, sym in enumerate(symbols, 1):
+    def work(sym: str) -> str:
         bars = fetch_bars(sym)
         if not bars:
-            skipped += 1
-            continue
+            return "skip"
         updates = compute_returns(bars)
         if not updates:
-            skipped += 1
-            continue
-        try:
-            sb.table("stock_master").update(updates).eq("symbol", sym).execute()
-            ok += 1
-            if i <= 3 or i % 50 == 0:
-                r1m = updates.get("return_1m_pct")
-                r1y = updates.get("return_1y_pct")
-                print(f"[OK] {sym}: 1m={r1m}% 1y={r1y}%")
-        except Exception as e:
-            print(f"[FAIL] {sym}: {e}", file=sys.stderr)
-            failed.append(sym)
+            return "skip"
+        return "ok" if _patch(sym, updates) else "fail"
 
-    print(f"[OK] {datetime.now().isoformat()} · updated={ok}/{len(symbols)} skipped={skipped} failed={len(failed)}")
-    if failed:
-        print(f"[FAIL] {failed[:15]}{'...' if len(failed) > 15 else ''}")
+    ok = skipped = failed = 0
+    t0 = datetime.now()
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        futs = {ex.submit(work, s): s for s in symbols}
+        for i, fut in enumerate(as_completed(futs), 1):
+            r = fut.result()
+            if r == "ok":
+                ok += 1
+            elif r == "skip":
+                skipped += 1
+            else:
+                failed += 1
+            if i % 500 == 0:
+                print(f"  [{i}/{len(symbols)}] ok={ok} skipped={skipped} failed={failed}")
+
+    print(f"[OK] {datetime.now().isoformat()} · updated={ok}/{len(symbols)} skipped={skipped} failed={failed} "
+          f"elapsed={(datetime.now()-t0).total_seconds():.0f}s")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@ import json
 import time
 import urllib.request
 
+_NOW_ISO = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())  # overwritten in main()
+
 KEY = os.environ.get('SUPABASE_SERVICE_KEY')
 if not KEY:
     with open('e:/Stocks sena/.supabase-service-key', 'r') as f:
@@ -84,6 +86,8 @@ def patch_one(row):
 
 def main(workers: int = 12, batch_size: int = 400):
     from concurrent.futures import ThreadPoolExecutor
+    global _NOW_ISO
+    _NOW_ISO = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     syms = fetch_all_stock_master_symbols()
     print(f'[sync] {len(syms)} symbols in stock_master')
 
@@ -106,7 +110,10 @@ def main(workers: int = 12, batch_size: int = 400):
                 skipped += 1
                 continue
             fetched += 1
-            row = {'symbol': sym}
+            # Stamp last_synced so freshness_assert can tell the price sync ran
+            # (previously this column was never updated here → freshness tracking
+            # showed stale even when prices were fresh).
+            row = {'symbol': sym, 'last_synced': _NOW_ISO}
             if snap.get('current_price') is not None:
                 row['latest_price'] = snap['current_price']
             if snap.get('market_cap_cr') is not None:

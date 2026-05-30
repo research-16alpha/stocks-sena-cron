@@ -35,11 +35,17 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python build_identifier_master.py
 
-      - name: Fill missing shareholding from BSE primary source
+      - name: Pull primary BSE shareholding for ALL stocks (category totals)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python bse_shareholding_cron.py --missing-promoter --quarters 4 --workers 8
+        run: python bse_shareholding_cron.py --all --quarters 4 --workers 8
+
+      - name: Sync category %s into shareholding_periods table (app Investors tab)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python backfill_shp_table.py
 
       - name: Recompute derived metrics (TTM) — roll up promoter/fii/dii
         env:

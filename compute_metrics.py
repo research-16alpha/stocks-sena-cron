@@ -317,8 +317,10 @@ def compute(d, use_ttm=False):
     qr = d.get('quarterly_results') or []
     if ap:
         m['latest_annual_period'] = ap[-1].get('period')
+        m['pl_years_count'] = len(ap)
     if qr:
         m['latest_quarter_period'] = qr[-1].get('period')
+        m['quarters_count'] = len(qr)   # N2: recompute in lockstep so it can't drift
 
     # market cap recompute — only from a fresh price (H9; avoids reviving a stale
     # mcap for illiquid/delisted names whose Yahoo quote is frozen)
@@ -386,7 +388,8 @@ def download_bundle(sym):
 
 SM_COLS = ['roe_pct', 'roce_pct', 'debt_equity', 'pb_ratio', 'ev_ebitda', 'rev_5y_cagr',
            'profit_5y_cagr', 'piotroski_score', 'promoter_pct', 'fii_pct', 'dii_pct',
-           'pledged_pct', 'latest_annual_period', 'latest_quarter_period', 'market_cap_cr']
+           'pledged_pct', 'latest_annual_period', 'latest_quarter_period', 'market_cap_cr',
+           'quarters_count', 'pl_years_count']  # N2: keep counts in sync with periods
 
 
 def patch_stock_master(sym, m):

@@ -1,0 +1,48 @@
+name: BSE Shareholding (primary source — promoter / FII / DII %)
+
+# Pulls the SEBI shareholding pattern (promoter / public / FII / DII / govt %)
+# straight from BSE's SHP iXBRL (in-bse-shp taxonomy) for stocks NSE's
+# shareholding feed doesn't carry. Third leg of the NSE->BSE coverage extension
+# (after quarters + annuals). Fills promoter_pct/fii_pct/dii_pct for the ~1,600
+# BSE-only / NSE-gap stocks that previously had ZERO shareholding data.
+
+on:
+  schedule:
+    # Weekly, Sat 10:00 UTC (3:30 PM IST). SHP files land within 21 days of
+    # quarter-end (Jan/Apr/Jul/Oct); weekly keeps the missing set drained.
+    - cron: '0 10 * * 6'
+  workflow_dispatch:
+
+jobs:
+  bse-shareholding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild exchange-identifier master (scrip codes)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python build_identifier_master.py
+
+      - name: Fill missing shareholding from BSE primary source
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bse_shareholding_cron.py --missing-promoter --quarters 4 --workers 8
+
+      - name: Recompute derived metrics (TTM) — roll up promoter/fii/dii
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_metrics.py --ttm

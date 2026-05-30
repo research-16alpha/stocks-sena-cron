@@ -1,0 +1,56 @@
+name: Monitor (alert on failed / cancelled / timed-out crons)
+
+# C4: GitHub's default email fires only on `failure`, never on `cancelled` or
+# `timed_out` — which is exactly how the worst crons die (timeout-kill). This
+# watches EVERY workflow's completion and opens/updates a single GitHub Issue
+# (which emails watchers) whenever a run ends in failure/cancelled/timed_out.
+# Self-contained — no external webhook/secret required.
+
+on:
+  workflow_run:
+    workflows: ['*']
+    types: [completed]
+
+permissions:
+  issues: write
+
+jobs:
+  alert:
+    # Only act on bad conclusions; ignore success/skipped. Never watch itself.
+    if: >
+      github.event.workflow_run.name != 'Monitor (alert on failed / cancelled / timed-out crons)' &&
+      contains(fromJSON('["failure","cancelled","timed_out","startup_failure"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open / update alert issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const title = `🚨 Cron health: "${run.name}" ${run.conclusion}`;
+            const body = [
+              `Workflow **${run.name}** finished with conclusion **${run.conclusion}**.`,
+              ``,
+              `- Run: ${run.html_url}`,
+              `- Branch: ${run.head_branch}`,
+              `- When: ${run.updated_at}`,
+              ``,
+              `_Note: \`cancelled\`/\`timed_out\` are NOT covered by GitHub's default failure email — this notifier exists to catch them (the daily-snapshot/returns/filings timeout-kills)._`,
+            ].join('\n');
+            // Find an existing open issue for this workflow to avoid spam; comment instead of re-opening many.
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'cron-alert', per_page: 100,
+            });
+            const existing = issues.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['cron-alert'],
+              });
+            }

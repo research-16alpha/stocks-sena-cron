@@ -88,18 +88,35 @@ def bse_session() -> requests.Session:
     return s
 
 
+def _retry(fn, tries=3, base=4):
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if i < tries - 1:
+                time.sleep(base * (i + 1))
+    raise last
+
+
 def fetch_bse_full(s: requests.Session) -> list:
-    r = s.get(BSE_MASTER, params={'Group': '', 'Scripcode': '', 'industry': '',
-                                  'segment': 'Equity', 'status': ''}, timeout=90)
-    r.raise_for_status()
-    return r.json()
+    def go():
+        r = s.get(BSE_MASTER, params={'Group': '', 'Scripcode': '', 'industry': '',
+                                      'segment': 'Equity', 'status': ''}, timeout=90)
+        r.raise_for_status()
+        return r.json()
+    return _retry(go)
 
 
 def fetch_nse_listed() -> list:
-    r = requests.get(NSE_EQUITY_L, headers={'User-Agent': UA}, timeout=30)
-    r.raise_for_status()
+    def go():
+        r = requests.get(NSE_EQUITY_L, headers={'User-Agent': UA}, timeout=30)
+        r.raise_for_status()
+        return r.text
+    text = _retry(go)
     out = []
-    for row in csv.DictReader(StringIO(r.text)):
+    for row in csv.DictReader(StringIO(text)):
         out.append({
             'symbol': (row.get('SYMBOL') or '').strip(),
             'name': (row.get('NAME OF COMPANY') or '').strip(),
@@ -150,34 +167,59 @@ def main():
                     help='Also PATCH stock_master.bse_scrip_code + isin for resolved rows.')
     args = ap.parse_args()
 
-    print('[1/4] Fetching BSE full master (Active+Delisted+Suspended)...')
-    s = bse_session()
-    bse_rows = fetch_bse_full(s)
-    print(f'      BSE rows: {len(bse_rows)}')
+    # ── Fetch BSE+NSE masters; on failure (Cloudflare throttles Actions runner
+    # IPs) fall back to the committed _identifier_master.json so the BSE crons
+    # still resolve scrip codes from the last good snapshot instead of hard-failing.
+    master = None
+    fetched = False
+    try:
+        print('[1/4] Fetching BSE full master (Active+Delisted+Suspended)...')
+        s = bse_session()
+        bse_rows = fetch_bse_full(s)
+        print(f'      BSE rows: {len(bse_rows)}')
+        print('[2/4] Fetching NSE listed (EQUITY_L)...')
+        nse_rows = fetch_nse_listed()
+        print(f'      NSE rows: {len(nse_rows)}')
+        if len(bse_rows) < 1000 or len(nse_rows) < 500:
+            raise RuntimeError(f'masters too small (bse={len(bse_rows)} nse={len(nse_rows)})')
+        print('[3/4] Building ISIN-keyed master...')
+        master = build_master(bse_rows, nse_rows)
+        fetched = True
+        with open(MASTER_FILE, 'w', encoding='utf-8') as f:
+            json.dump(master, f)
+        print(f'      wrote {MASTER_FILE} ({len(master)} entries)')
+    except Exception as e:  # noqa: BLE001
+        print(f'[WARN] live master fetch failed ({type(e).__name__}: {e}); '
+              f'falling back to committed {os.path.basename(MASTER_FILE)}', file=sys.stderr)
+        if not os.path.exists(MASTER_FILE):
+            print('[ERR] no committed identifier master to fall back to — cannot proceed',
+                  file=sys.stderr)
+            sys.exit(1)
+        with open(MASTER_FILE, encoding='utf-8') as f:
+            master = json.load(f)
+        print(f'      loaded committed master ({len(master)} entries)')
 
-    print('[2/4] Fetching NSE listed (EQUITY_L)...')
-    nse_rows = fetch_nse_listed()
-    print(f'      NSE rows: {len(nse_rows)}')
+    with_isin = sum(1 for m in master.values() if m.get('isin'))
+    with_both = sum(1 for m in master.values() if m.get('bse_scrip') and m.get('nse_symbol'))
+    print(f'      master entries: {len(master)}  with_isin: {with_isin}  bse+nse linked: {with_both}'
+          f'  (source: {"live" if fetched else "committed-fallback"})')
 
-    print('[3/4] Building ISIN-keyed master...')
-    master = build_master(bse_rows, nse_rows)
-    with_isin = sum(1 for m in master.values() if m['isin'])
-    with_both = sum(1 for m in master.values() if m['bse_scrip'] and m['nse_symbol'])
-    print(f'      master entries: {len(master)}  with_isin: {with_isin}  bse+nse linked: {with_both}')
-    with open(MASTER_FILE, 'w', encoding='utf-8') as f:
-        json.dump(master, f)
-    print(f'      wrote {MASTER_FILE}')
-
-    # Build resolution indices
-    nse_by_symbol = {n['symbol'].upper(): n for n in nse_rows if n['symbol']}
+    # Build resolution indices from the MASTER dict (works for fetched OR loaded).
+    nse_by_symbol = {}
     nse_name = {}
-    for n in nse_rows:
-        nse_name.setdefault(norm(n['name']), []).append(n)
-    bse_active = [b for b in bse_rows if b.get('Status') == 'Active']
     bse_name = {}
-    for b in bse_active:
-        bse_name.setdefault(norm(b.get('Issuer_Name') or b.get('Scrip_Name') or ''), []).append(b)
-    isin_to_master = {m['isin']: m for m in master.values() if m['isin']}
+    isin_to_master = {}
+    for m in master.values():
+        if m.get('isin'):
+            isin_to_master[m['isin']] = m
+        if m.get('nse_symbol'):
+            nse_by_symbol[m['nse_symbol'].upper()] = {'symbol': m['nse_symbol'], 'isin': m.get('isin')}
+            nse_name.setdefault(norm(m.get('nse_name') or ''), []).append(
+                {'symbol': m['nse_symbol'], 'isin': m.get('isin')})
+        if m.get('bse_scrip') and m.get('bse_status') == 'Active':
+            bse_name.setdefault(norm(m.get('bse_name') or ''), []).append(
+                {'SCRIP_CD': m['bse_scrip'], 'ISIN_NUMBER': m.get('isin'),
+                 'Issuer_Name': m.get('bse_name'), 'Status': m.get('bse_status')})
 
     print('[4/4] Resolving stock_master universe...')
     H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}

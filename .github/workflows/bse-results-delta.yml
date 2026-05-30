@@ -1,0 +1,47 @@
+name: BSE Results Delta (DAILY ongoing freshness — new quarters + annuals)
+
+# Keeps the whole market current as companies file results. Replaces the broken
+# fetch_new_filings -> apply_new_filings path (which pulled announcement PDFs and
+# applied 0). Asks BSE who filed results in the recent window and pulls their
+# STRUCTURED XBRL via the same parser as the backfill crons, so new quarters +
+# annuals actually land. NSE-primary rows are protected by the fill guard.
+
+on:
+  schedule:
+    # Daily 15:00 UTC (8:30 PM IST) — after the day's result filings are up.
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  bse-results-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh scrip-code map
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python build_identifier_master.py --populate
+
+      - name: Apply new results (structured XBRL) for recent filers
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bse_results_delta_cron.py --flagdur 2 --workers 8
+
+      - name: Recompute derived metrics (TTM)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_metrics.py --ttm

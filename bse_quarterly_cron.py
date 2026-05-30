@@ -56,6 +56,24 @@ from fix_bank_quarterly_sales import (
 HERE = os.path.dirname(os.path.abspath(__file__))
 SYMIDS_FILE = os.path.join(HERE, '_symbol_identifiers.json')
 
+
+def expected_quarter_cutoff():
+    """Most recent quarter-end whose ~45-day filing deadline has passed (today).
+    Stocks below this are genuinely behind on a quarter that should be filed by now.
+    Auto-advances each season so the stale-sweep never needs a hardcoded date."""
+    import datetime as _dt
+    d = _dt.date.today()
+    qs = [((d.year - 1, 12, 31), (d.year, 2, 14)),
+          ((d.year, 3, 31), (d.year, 5, 15)),
+          ((d.year, 6, 30), (d.year, 8, 14)),
+          ((d.year, 9, 30), (d.year, 11, 14)),
+          ((d.year, 12, 31), (d.year + 1, 2, 14))]
+    latest = None
+    for (qy, qm, qd), (fy, fm, fd) in qs:
+        if _dt.date(fy, fm, fd) <= d:
+            latest = _dt.date(qy, qm, qd)
+    return (latest or _dt.date(d.year - 1, 12, 31)).isoformat()
+
 BSE_API = 'https://api.bseindia.com/BseIndiaAPI/api/Corp_FinanceResult_ng/w'
 XBRL_BASE = 'https://www.bseindia.com/XBRLFILES/'
 SOURCE_TAG = 'bse_integrated_filing'
@@ -254,8 +272,12 @@ def load_targets(args, symids):
             break
     if args.all_syms:
         return [r['symbol'] for r in rows]
-    # default --stale: latest quarter older than cutoff
-    cutoff = args.stale_before
+    # default --stale: latest quarter older than cutoff. The cutoff defaults to the
+    # CURRENT expected-filed quarter (dynamic) so the weekly cron catches stocks that
+    # are even ONE quarter behind — not just the >1-year-stale ones a fixed 2025-03-31
+    # cutoff would miss. Auto-advances each quarter without a code change.
+    cutoff = args.stale_before or expected_quarter_cutoff()
+    print(f'[INFO] stale cutoff = {cutoff} (targeting stocks below this quarter)')
     return [r['symbol'] for r in rows
             if not r.get('latest_quarter_period') or r['latest_quarter_period'] < cutoff]
 
@@ -267,7 +289,9 @@ def main():
                     help='JSON file with a list of symbols to process (overrides --syms/--stale).')
     ap.add_argument('--stale', action='store_true', help='target active stale-quarter stocks (default if no --syms)')
     ap.add_argument('--all', dest='all_syms', action='store_true', help='full resolvable universe')
-    ap.add_argument('--stale-before', dest='stale_before', default='2025-03-31')
+    ap.add_argument('--stale-before', dest='stale_before', default='',
+                    help='target stocks with latest_quarter < this. Empty = dynamic '
+                         'current-expected-quarter (recommended; catches 1-quarter-behind stocks).')
     ap.add_argument('--since', default='2024-06-30', help='only write quarters with end >= this')
     ap.add_argument('--flagdur', default='6', choices=['6', '7', 'all'],
                     help='6=last yr (default), 7=history, all=both')

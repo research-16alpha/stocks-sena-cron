@@ -79,6 +79,13 @@ _FACT_RE = re.compile(
 _FACT_RE2 = re.compile(  # contextRef before name
     r'<(?:ix:)?nonFraction[^>]*?contextRef=["\']([^"\']+)["\'][^>]*?name=["\']in-bse-shp:' + PCT_TAG +
     r'["\'][^>]*?>([^<]*)<', re.I)
+# Older SHP filings (pre ~mid-2025) are PLAIN XML, not iXBRL: the tag is the
+# element itself (<in-bse-shp:Shareholding...AsAPercentage... contextRef="...">val</...>)
+# rather than an <ix:nonFraction name="..."> wrapper. Without this the parser
+# silently returned {} on the older history (e.g. FEDERALBNK pre-2025-06).
+_FACT_RE3 = re.compile(
+    r'<in-bse-shp:' + PCT_TAG + r'\s+[^>]*?contextRef=["\']([^"\']+)["\'][^>]*?>([^<]*)</in-bse-shp:' + PCT_TAG + r'>',
+    re.I)
 
 _local = threading.local()
 
@@ -139,7 +146,7 @@ def fetch_quarters(scrip):
 def parse_shp(text):
     """Extract category %s from a BSE in-bse-shp iXBRL doc."""
     vals = {}
-    for rx in (_FACT_RE, _FACT_RE2):
+    for rx in (_FACT_RE, _FACT_RE2, _FACT_RE3):
         for ctx, val in rx.findall(text):
             field = CTX_MAP.get(ctx)
             if not field or field in vals:

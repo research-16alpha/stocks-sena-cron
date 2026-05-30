@@ -1,10 +1,13 @@
-name: NSE Delta Quarterly (results-comparision)
+name: NSE Delta Quarterly (results-comparision) [DISABLED — frozen feed]
+
+# H4: DISABLED. The results-comparision endpoint this drives is FROZEN at
+# Jan-2025 (RELIANCE re_create_dt=16-JAN-2025) yet a scheduled run re-inserted
+# 839 STALE quarters across 228 symbols while reporting "success". Current
+# quarters now flow via bse-results-delta (structured BSE XBRL) +
+# integrated-filing-quarterly (NSE banks). Schedule removed; manual-dispatch only.
+# Do NOT re-enable without a verified live feed.
 
 on:
-  schedule:
-    # 3x per week — Tue/Thu/Sat at 8:00 UTC (1:30 PM IST)
-    # Catches new quarterly result filings + bank-schema updates
-    - cron: '0 8 * * 2,4,6'
   workflow_dispatch:
 
 jobs:

@@ -144,29 +144,47 @@ def map_quarter(facts: dict, ctx: str, ftype: str) -> dict:
     oi = g(facts, 'OtherIncome', ctx)
     income = g(facts, 'Income', ctx)
     revops = g(facts, 'RevenueFromOperations', ctx)
-    # sales = total income. Prefer Income; else RevenueFromOperations; else ie+oi.
+    # Insurance (IRDA schema): no Income/RevenueFromOperations/InterestEarned — the
+    # top line is OperatingIncome (premiums + investment income), profit is
+    # ProfitLossAfterTax. Added so insurers (NIACL/GICRE/life cos) aren't dropped.
+    opinc = g(facts, 'OperatingIncome', ctx)
+    gross_prem = g(facts, 'GrossPremiumsWritten', ctx)
+    # sales = total income. Prefer Income; else RevenueFromOperations; else ie+oi;
+    # else insurance OperatingIncome (else gross premium as a last resort).
     if income is not None:
         sales = income
     elif revops is not None:
         sales = revops + (oi or 0)
     elif ie is not None or oi is not None:
         sales = (ie or 0) + (oi or 0)
+    elif gross_prem:
+        # Insurance top line = gross premium written (OperatingIncome is a small
+        # net/residual figure). Only when it's a real >0 quarter value — some
+        # insurers file premium only YTD, leaving 0 in the quarter context; we
+        # don't ship a misleading 0, net_profit still captures the row.
+        sales = gross_prem
+    elif opinc:
+        sales = opinc
     else:
         sales = None
 
     pbt = first(facts, ctx,
                 'ProfitLossFromOrdinaryActivitiesBeforeTax', 'ProfitBeforeTax',
-                'ProfitBeforeExceptionalItemsAndTax')
+                'ProfitBeforeExceptionalItemsAndTax',
+                'ProfitOrLossBeforeTax', 'ProfitOrLossBeforeExtraordinaryItems')  # insurance
     np_ = first(facts, ctx,
                 'ProfitLossFromOrdinaryActivitiesAfterTax', 'ProfitLossForPeriod',
                 'ProfitLossForThePeriod', 'ProfitLossForPeriodFromContinuingOperations',
                 'ProfitOrLossAttributableToOwnersOfParent',
-                'ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates')
+                'ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates',
+                'ProfitLossAfterTax')  # insurance (IRDA)
     eps = first(facts, ctx,
                 'BasicEarningsPerShareAfterExtraordinaryItems',
                 'BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations',
                 'BasicEarningsPerShareBeforeExtraordinaryItems',
-                'BasicEarningsLossPerShareFromContinuingOperations')
+                'BasicEarningsLossPerShareFromContinuingOperations',
+                'BasicAndDilutedEPSAfterExtraordinaryItemsNetOfTaxExpenseForThePeriodNotToBeAnnualized',
+                'BasicAndDilutedEPSBeforeExtraordinaryItemsNetOfTaxExpenseForThePeriodNotToBeAnnualized')  # insurance
     deps = first(facts, ctx,
                  'DilutedEarningsPerShareAfterExtraordinaryItems',
                  'DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations',

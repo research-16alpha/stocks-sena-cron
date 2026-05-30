@@ -169,11 +169,15 @@ def compute(d, use_ttm=False):
     Balance-sheet inputs (equity, borrowings) stay annual either way. Falls back to
     annual per-field when a quarter lacks the tag, and entirely when <4 quarters."""
     bank = is_bank_bundle(d)
-    bs = latest(d, 'annual_bs_consolidated', 'annual_bs', 'annual_bs_standalone')
-    pl = latest(d, 'annual_pl_consolidated', 'annual_pl', 'annual_pl_standalone')
-    pl_series = series(d, 'annual_pl_consolidated', 'annual_pl', 'annual_pl_standalone')
-    bs_series = series(d, 'annual_bs_consolidated', 'annual_bs', 'annual_bs_standalone')
-    cf = latest(d, 'annual_cf_consolidated', 'annual_cf', 'annual_cf_standalone')
+    # Prefer the merged alias (consolidated-preferred PER PERIOD, kept fresh by the
+    # parser + bse_annual_cron). A basis-specific array can be stale relative to the
+    # alias — e.g. a company that stopped filing consolidated leaves a 2-year-old
+    # annual_bs_consolidated that would otherwise shadow the current standalone year.
+    bs = latest(d, 'annual_bs', 'annual_bs_consolidated', 'annual_bs_standalone')
+    pl = latest(d, 'annual_pl', 'annual_pl_consolidated', 'annual_pl_standalone')
+    pl_series = series(d, 'annual_pl', 'annual_pl_consolidated', 'annual_pl_standalone')
+    bs_series = series(d, 'annual_bs', 'annual_bs_consolidated', 'annual_bs_standalone')
+    cf = latest(d, 'annual_cf', 'annual_cf_consolidated', 'annual_cf_standalone')
     snap = (d.get('snapshot') or [{}])[0] if isinstance(d.get('snapshot'), list) and d.get('snapshot') else (d.get('snapshot') or {})
     price = g(snap, 'current_price', 'price')
     face = g(snap, 'face_value') or 10.0
@@ -278,7 +282,7 @@ def compute(d, use_ttm=False):
         m['profit_5y_cagr'] = pc
 
     # Piotroski (needs >=2 years of pl+bs+cf)
-    pio = piotroski(pl_series, bs_series, series(d, 'annual_cf_consolidated', 'annual_cf', 'annual_cf_standalone'))
+    pio = piotroski(pl_series, bs_series, series(d, 'annual_cf', 'annual_cf_consolidated', 'annual_cf_standalone'))
     if pio is not None:
         m['piotroski_score'] = pio
 
@@ -291,7 +295,7 @@ def compute(d, use_ttm=False):
             m[col] = round(v, 2)
 
     # Latest periods
-    ap = series(d, 'annual_pl_consolidated', 'annual_pl', 'annual_pl_standalone')
+    ap = series(d, 'annual_pl', 'annual_pl_consolidated', 'annual_pl_standalone')
     qr = d.get('quarterly_results') or []
     if ap:
         m['latest_annual_period'] = ap[-1].get('period')
@@ -398,8 +402,9 @@ def process(sym, dry, use_ttm=False):
     def should_set(field, existing):
         if field == 'metrics_basis':
             return True                                        # always reflect this run's basis
-        if ttm and field in ('roe', 'roce', 'pb'):
-            return True                                        # TTM refresh wins
+        if ttm and field in ('roe', 'roce', 'pb', 'book_value'):
+            return True   # TTM = authoritative recompute from primary annual; the
+                          # roe/roce/pb/book_value set refreshes together (sanity-gated)
         if field == 'book_value':
             return existing in (None, 0, 0.0)                 # 0 = broken
         if field == 'pb':

@@ -95,6 +95,13 @@ def main():
 
     scrips = recent_filers(args.flagdur)
     print(f'[INFO] recent filers (FlagDur={args.flagdur}): {len(scrips)} scrips')
+    # H2: a "last week" window returning ZERO filers means the BSE source is
+    # down/throttled — fail loud instead of exiting 0 green-but-empty, so the
+    # monitor + freshness-assert catch it rather than silently ingesting nothing.
+    if not scrips and args.flagdur in ('2', '3') and not args.dry_run:
+        print('[ERR] 0 recent filers from BSE for a multi-day window — source outage, failing loud',
+              file=sys.stderr)
+        sys.exit(1)
     s2sym = scrip_to_symbol()
     pairs = [(s2sym[sc], sc) for sc in scrips if sc in s2sym]
     if args.limit:

@@ -364,6 +364,18 @@ def main():
     print(f'  Skipped : {len(skipped)}')
     print(f'  Errors  : {len(errors)}')
 
+    # H3: this path fetched only PDFs (unparseable) and applied 0 every day while
+    # exiting 0 "success". Make a 0-applied-despite-N-items run LOUD so it's not
+    # mistaken for healthy. Real result ingestion now goes through
+    # bse_results_delta_cron (structured XBRL); this PDF path is superseded.
+    if items and not applied:
+        reasons = {}
+        for s in skipped:
+            reasons[s.get('reason', '?')] = reasons.get(s.get('reason', '?'), 0) + 1
+        print(f'::warning::apply_new_filings applied 0 of {len(items)} filings '
+              f'(skip reasons: {reasons}). This path is superseded by bse_results_delta_cron.',
+              file=sys.stderr)
+
 
 if __name__ == '__main__':
     main()

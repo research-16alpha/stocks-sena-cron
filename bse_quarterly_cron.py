@@ -234,6 +234,9 @@ def process_symbol(sym: str, scrip: str, since_iso: str, flagdurs, dry: bool):
 
 
 def load_targets(args, symids):
+    if args.syms_file:
+        with open(args.syms_file) as f:
+            return [s.strip().upper() for s in json.load(f) if s.strip()]
     if args.syms:
         return [s.strip().upper() for s in args.syms.split(',') if s.strip()]
     # pull active universe + latest_quarter_period from stock_master
@@ -260,6 +263,8 @@ def load_targets(args, symids):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--syms', type=str, default='')
+    ap.add_argument('--syms-file', dest='syms_file', type=str, default='',
+                    help='JSON file with a list of symbols to process (overrides --syms/--stale).')
     ap.add_argument('--stale', action='store_true', help='target active stale-quarter stocks (default if no --syms)')
     ap.add_argument('--all', dest='all_syms', action='store_true', help='full resolvable universe')
     ap.add_argument('--stale-before', dest='stale_before', default='2025-03-31')

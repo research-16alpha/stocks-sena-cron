@@ -137,11 +137,7 @@ def is_market_open() -> bool:
     return 555 <= mins <= 930  # 9:15 - 15:30 IST
 
 
-def main():
-    if os.environ.get("SKIP_MARKET_CHECK") != "1" and not is_market_open():
-        print("[INFO] Market closed, skipping.")
-        return
-
+def run_once():
     symbols = INDICES + fetch_top_symbols(100)
     print(f"[INFO] Intraday refresh -> bucket '{BUCKET}' · {len(symbols)} symbols")
 
@@ -164,6 +160,42 @@ def main():
     print(f"[OK] {datetime.now(IST).isoformat()} · refreshed={ok}/{len(symbols)} failed={len(failed)}")
     if failed:
         print(f"[FAIL] {failed[:15]}{'...' if len(failed) > 15 else ''}")
+
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    # --loop: one GitHub trigger -> internal 10-min loop until market close.
+    # Replaces the */10 schedule (GitHub silently drops most high-frequency
+    # triggers, so intraday was truncating mid-session at ~2/36 runs).
+    ap.add_argument("--loop", action="store_true")
+    ap.add_argument("--interval", type=int, default=600, help="seconds between refreshes (default 600=10min)")
+    ap.add_argument("--max-minutes", dest="max_minutes", type=int, default=195,
+                    help="hard stop (keeps the job under GitHub's 6h limit)")
+    args = ap.parse_args()
+
+    skip_check = os.environ.get("SKIP_MARKET_CHECK") == "1"
+
+    if not args.loop:
+        if not skip_check and not is_market_open():
+            print("[INFO] Market closed, skipping.")
+            return
+        run_once()
+        return
+
+    # Loop mode: refresh every `interval`s while the market is open, until the
+    # max-minutes safety. One reliable trigger drives the whole window.
+    deadline = time.time() + args.max_minutes * 60
+    ticks = 0
+    while time.time() < deadline:
+        if not skip_check and not is_market_open():
+            print(f"[INFO] Market closed at {datetime.now(IST):%H:%M IST} — exiting loop after {ticks} ticks.")
+            return
+        run_once()
+        ticks += 1
+        # sleep to the next interval, but not past the deadline
+        time.sleep(min(args.interval, max(0, deadline - time.time())))
+    print(f"[INFO] Hit max-minutes safety after {ticks} ticks.")
 
 
 if __name__ == "__main__":

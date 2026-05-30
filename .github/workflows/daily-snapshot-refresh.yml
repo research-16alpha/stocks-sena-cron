@@ -10,25 +10,39 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75   # C1: was 30 → refresh of ~4,500 symbols was killed mid-run
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Refresh snapshots (price, PE, PB, mcap, 52w range)
+      - name: Refresh snapshots (price, PE, PB, mcap, 52w range) into bundles
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python daily_snapshot_refresh.py
 
+  # C1 FIX: sync runs as its OWN job with if:always(), so the bundle→stock_master
+  # copy (the prices the app actually serves) happens even if the refresh job
+  # times out / fails. Reads the freshly-written bundles from storage.
+  sync:
+    needs: refresh
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
       - name: Sync snapshot data back to stock_master table
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

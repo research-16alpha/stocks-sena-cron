@@ -506,6 +506,12 @@ def main():
     else:
         print('[INFO] listing bundles...')
         syms = list_bundles()
+        # M5: skip the 688 orphan BSE_<scrip> bundles — they don't map to a
+        # stock_master symbol (so are never displayed) and just waste processing.
+        n_before = len(syms)
+        syms = [s for s in syms if not s.startswith('BSE_')]
+        if n_before != len(syms):
+            print(f'[INFO] skipped {n_before - len(syms)} orphan BSE_ bundles')
     if args.limit:
         syms = syms[:args.limit]
     print(f'[INFO] {len(syms)} symbols')

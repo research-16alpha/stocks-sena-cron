@@ -61,7 +61,12 @@ WORKERS = 8
 # in-bse-shp context -> our field
 CTX_MAP = {
     'ShareholdingOfPromoterAndPromoterGroup_ContextI': 'promoters',
-    'PublicShareholding_ContextI': 'public',
+    # NOTE: PublicShareholding = ALL non-promoter (= FII + DII + retail), so it's
+    # 100% for promoter-less companies. The app's "public" means RETAIL / non-
+    # institutional public (the residual), so promoters+fii+dii+govt+public ≈ 100.
+    # Map "public" to NonInstitutions; keep PublicShareholding only as a total.
+    'NonInstitutions_ContextI': 'public',
+    'PublicShareholding_ContextI': 'public_total',
     'InstitutionsForeign_ContextI': 'fii',
     'InstitutionsDomestic_ContextI': 'dii',
     'Governments_ContextI': 'government',
@@ -237,14 +242,18 @@ def main():
     ap.add_argument('--syms', type=str, default='')
     ap.add_argument('--syms-file', dest='syms_file', type=str, default='')
     ap.add_argument('--missing-promoter', action='store_true',
-                    help='target active stocks with NULL promoter_pct (default if no --syms)')
+                    help='target only active stocks with NULL promoter_pct')
+    ap.add_argument('--all', dest='all_syms', action='store_true',
+                    help='target the FULL active universe — upgrades EVERY stock to '
+                         'primary BSE SHP, including ones currently on secondary (screener) data')
     ap.add_argument('--quarters', type=int, default=4, help='how many recent SHP quarters to pull')
     ap.add_argument('--workers', type=int, default=WORKERS)
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
-    if not args.syms and not args.syms_file:
-        args.missing_promoter = True
+    # Default to FULL universe (primary for everyone) unless explicitly --missing-promoter.
+    if not args.syms and not args.syms_file and not args.missing_promoter:
+        args.all_syms = True
 
     if not os.path.exists(SYMIDS_FILE):
         print(f'[ERR] {SYMIDS_FILE} missing — run build_identifier_master.py first', file=sys.stderr)

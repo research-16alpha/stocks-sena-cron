@@ -1,0 +1,48 @@
+name: BSE Annual (primary source — book value / ROE / ROCE inputs)
+
+# Pulls primary-source ANNUAL statements (P&L + Balance Sheet + Cash Flow) from
+# BSE for stocks whose annual data is stale/missing. This is what drives book
+# value / ROE / ROCE / Piotroski — the quarterly cron alone cannot fix those.
+# Feeds the March year-end audited iXBRL into parse_annual_file and merges
+# fill-don't-clobber (consolidated-preferred per period). Idempotent.
+
+on:
+  schedule:
+    # Weekly, Sun 9:30 UTC (3:00 PM IST) — after the week's quarterly/results crons.
+    # Annual filings land mainly Apr–Jul; weekly keeps the stale-annual set drained.
+    - cron: '30 9 * * 0'
+  workflow_dispatch:
+
+jobs:
+  bse-annual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild exchange-identifier master (scrip codes)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python build_identifier_master.py
+
+      - name: Fill stale annual statements from BSE primary source
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bse_annual_cron.py --annual-stale --since-fy 2022-03-31 --workers 8
+
+      - name: Recompute derived metrics (TTM) from refreshed annuals
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_metrics.py --ttm

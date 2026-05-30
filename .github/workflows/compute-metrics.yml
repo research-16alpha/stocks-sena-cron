@@ -30,3 +30,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python compute_metrics.py --ttm
+
+      # H11: append today's dated row per stock to stock_metrics_history (point-in-time
+      # store — the foundation for as-of/backtest features without survivorship bias).
+      - name: Append point-in-time metrics snapshot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python snapshot_history.py

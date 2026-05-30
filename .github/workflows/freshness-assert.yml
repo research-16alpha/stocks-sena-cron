@@ -1,0 +1,29 @@
+name: Freshness Assert (data SLA — fails loud on stale/missing)
+
+# C5: the dead-man switch. Runs after the day's ingestion crons and FAILS (exit 1)
+# if any dataset is stale or under-covered — so a cron that exits 0 having written
+# nothing is no longer invisible. A failure here is picked up by monitor.yml.
+
+on:
+  schedule:
+    - cron: '30 16 * * *'   # 16:30 UTC (10:00 PM IST) — after the data crons settle
+  workflow_dispatch:
+
+jobs:
+  assert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Assert data freshness + coverage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python freshness_assert.py

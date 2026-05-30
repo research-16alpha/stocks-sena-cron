@@ -35,3 +35,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python integrated_filing_quarterly.py --since 2025-01-01
+
+      # M2: recompute so latest_quarter_period + TTM ratios reflect the new quarters
+      - name: Recompute derived metrics (TTM)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_metrics.py --ttm

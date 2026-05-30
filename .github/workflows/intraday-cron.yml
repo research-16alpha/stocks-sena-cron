@@ -1,30 +1,33 @@
 name: Intraday OHLCV Refresh
 
+# Two RELIABLE triggers (morning + afternoon), each runs a single job that loops
+# internally every 10 min until the market closes. Replaces the old `*/10`
+# schedule — GitHub Actions silently DROPS most high-frequency cron triggers
+# (only ~2 of 36 fired), so intraday used to truncate mid-session. Two long jobs
+# (each ~195 min, under GitHub's 6h limit) cover the full 09:15-15:30 IST session.
+
 on:
-  # Every 10 min between 9:15-15:30 IST (3:45-10:00 UTC), Mon-Fri
   schedule:
-    - cron: '*/10 4-9 * * 1-5'   # 04:00 - 09:50 UTC = 09:30 - 15:20 IST
+    - cron: '50 3 * * 1-5'   # 03:50 UTC = 09:20 IST → loops through the morning
+    - cron: '0 7 * * 1-5'    # 07:00 UTC = 12:30 IST → loops through to the close
   workflow_dispatch:
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 205   # > the 195-min loop; well under GitHub's 6h job cap
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Run intraday refresh
+      - name: Run intraday refresh (internal 10-min loop until close)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SKIP_MARKET_CHECK: '0'
-        run: python intraday_cron.py
+        run: python intraday_cron.py --loop --interval 600 --max-minutes 195

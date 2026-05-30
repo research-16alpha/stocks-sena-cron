@@ -51,7 +51,10 @@ from fix_bank_quarterly_sales import (
 HERE = os.path.dirname(os.path.abspath(__file__))
 SYMIDS_FILE = os.path.join(HERE, '_symbol_identifiers.json')
 SOURCE_TAG = 'bse_annual_filing'
-PRIMARY_SOURCES = {'bse_annual_filing'}   # don't clobber our own primary on re-run
+# M1 fix: never clobber ANY primary-source annual row (NSE integrated filing /
+# MCA XBRL / our own BSE). Previously only protected our own tag → it replaced
+# fresher NSE/MCA annuals wholesale. We field-merge into non-primary rows only.
+PRIMARY_SOURCES = {'bse_annual_filing', 'nse_integrated_filing', 'xbrl_mca'}
 WORKERS = 8
 
 

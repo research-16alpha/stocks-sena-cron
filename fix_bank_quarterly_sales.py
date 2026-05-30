@@ -137,10 +137,16 @@ def ensure_backup_bucket():
     return r.status_code in (200, 409)
 
 
+# M11: one backup folder per PROCESS (date + HHMMSS), set once at import. Within a
+# run all symbols share it; separate runs (e.g. the quarterly cron then the annual
+# cron on the same day) get DIFFERENT folders, so the annual step no longer
+# overwrites the quarterly step's pre-run backup at the same daily path.
+_BACKUP_RUN_STAMP = time.strftime('%Y%m%d_%H%M%S', time.gmtime())
+
+
 def backup_bundle(sym, raw_bytes):
-    """Store a frozen copy in fundamentals-v2-backups/<date>/<sym>.json before overwrite."""
-    stamp = time.strftime('%Y%m%d', time.gmtime())
-    path = f'{BACKUP_BUCKET}/{stamp}/{sym}.json'
+    """Store a frozen copy in fundamentals-v2-backups/<date_HHMMSS>/<sym>.json before overwrite."""
+    path = f'{BACKUP_BUCKET}/{_BACKUP_RUN_STAMP}/{sym}.json'
     h = {**HEADERS, 'Content-Type': 'application/json', 'x-upsert': 'true'}
     r = requests.post(f'{URL}/storage/v1/object/{path}', headers=h, data=raw_bytes, timeout=30)
     if r.status_code in (200, 201):

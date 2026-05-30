@@ -22,24 +22,24 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Pull filings for last 7 days (overlap window)
+      # H4: replaced the broken chain (fetch PDFs → apply 0 → nse_delta --force
+      # which clobbered with Jan-2025-frozen stale rows) with the structured
+      # delta over a WIDE 15-day window — re-pulls anything the daily run missed,
+      # from primary XBRL, fill-don't-clobber (no --force, no stale overwrite).
+      - name: Refresh scrip-code map
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          FILINGS_DIR: /tmp/filings
-        run: |
-          mkdir -p /tmp/filings
-          python fetch_new_filings.py --hours 168
+        run: python build_identifier_master.py --populate
 
-      - name: Apply (parse + merge any missed XBRL into bundles)
+      - name: Structured re-sync of results filed in the last 15 days
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          FILINGS_DIR: /tmp/filings
-        run: python apply_new_filings.py
+        run: python bse_results_delta_cron.py --flagdur 3 --workers 8
 
-      - name: Force-refresh NSE quarterly across all stocks (overwrite mode)
+      - name: Recompute derived metrics (TTM)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python nse_delta_quarterly.py --force
+        run: python compute_metrics.py --ttm

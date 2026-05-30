@@ -1,0 +1,30 @@
+name: Index Constituents (M7 — NIFTY/BANKNIFTY/sector membership)
+
+# M7: maintains the index_constituents table from NSE's official per-index CSVs,
+# so the app stops relying on a hardcoded NIFTY/BANKNIFTY list that goes stale on
+# every index reshuffle. Each run stamps today's membership (also = a point-in-time
+# membership history). Weekly is plenty (NSE reshuffles ~twice a year).
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'   # Monday 05:00 UTC (10:30 AM IST)
+  workflow_dispatch:
+
+jobs:
+  index-constituents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Refresh index constituents from NSE
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python index_constituents_cron.py

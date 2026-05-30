@@ -22,8 +22,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Scrape NSE bulk + block deals
+      - name: Scrape NSE bulk + block deals (today)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python bulk_deals_scraper.py
+
+      # Catch any missed days (the daily CSV only has today; this fills holes
+      # from a failed run via NSE's historical endpoint). Idempotent upsert.
+      - name: Backfill last 30 days of bulk/block deals
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python backfill_bulk_deals.py --days 30

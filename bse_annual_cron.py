@@ -235,8 +235,11 @@ def main():
     ap.add_argument('--annual-stale', action='store_true',
                     help='target active stocks with stale/missing annual (default if no --syms)')
     ap.add_argument('--all', dest='all_syms', action='store_true')
-    ap.add_argument('--annual-before', dest='annual_before', default='2024-03-31',
-                    help='a stock is "annual-stale" if latest_annual_period < this')
+    ap.add_argument('--annual-before', dest='annual_before', default='2025-03-31',
+                    help='a stock is "annual-stale" if latest_annual_period < this. '
+                         'Default 2025-03-31 = must have FY25 (fully filed). FY26 lands '
+                         'May-Sep and is caught in real time by bse_results_delta_cron; '
+                         'pass --annual-before 2026-03-31 for a full FY26 catch-up.')
     ap.add_argument('--since-fy', dest='since_fy', default='2022-03-31',
                     help='only write annual periods >= this (keep ~4 recent FYs)')
     ap.add_argument('--flagdur', default='all', choices=['6', '7', 'all'])

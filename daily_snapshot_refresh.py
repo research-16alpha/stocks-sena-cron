@@ -338,19 +338,11 @@ def main():
     print(f'  Exceptions       : {exception_count}')
     print(f'  Elapsed          : {time.time()-t0:.1f}s')
 
-    # Sprint 2: push price/mcap/PE back to stock_master table so search,
-    # screener, sector heatmap all pick up the fresh data. Without this the
-    # snapshot lives only in bundle JSONs and the app's table queries stay stale.
-    print()
-    print('=' * 60)
-    print('[INFO] Syncing snapshots to stock_master table...')
-    try:
-        import sync_snapshot_to_stock_master  # type: ignore
-        sync_snapshot_to_stock_master.main()
-    except ImportError:
-        print('[WARN] sync_snapshot_to_stock_master.py not found in path — skipping sync')
-    except Exception as e:
-        print(f'[ERR] sync failed: {e}', file=sys.stderr)
+    # NOTE: the snapshot->stock_master sync runs as a SEPARATE workflow job
+    # (daily-snapshot-refresh.yml `sync` job, if:always()) so it executes even
+    # when this refresh is timeout-killed. Running it inline here would just be
+    # re-killed by the same job timeout, which is the C1 bug we fixed. The CI
+    # `sync` step invokes sync_snapshot_to_stock_master.py directly.
 
 
 if __name__ == '__main__':

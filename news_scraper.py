@@ -51,7 +51,7 @@ STOCK_KEYWORDS = {
     "INFY": ["infosys", "infy"],
     "WIPRO": ["wipro"],
     "HCLTECH": ["hcl tech", "hcltech"],
-    "RELIANCE": ["reliance industries", "reliance ind", "ril"],
+    "RELIANCE": ["reliance industries", "ril"],
     "TATAMOTORS": ["tata motors", "tatamotors"],
     "TATASTEEL": ["tata steel"],
     "ADANIGREEN": ["adani green"],
@@ -72,12 +72,22 @@ STOCK_KEYWORDS = {
 }
 
 
+# Word-boundary patterns. Raw substring matching leaked badly: "ril" matched
+# "April", "sbi" could match inside other words, etc. — tagging unrelated
+# articles to a stock. \b...\b requires the keyword to stand as a whole token,
+# so \bril\b matches "RIL" / "ril fell" but NOT "April".
+_SYMBOL_PATTERNS = {
+    sym: [re.compile(r'\b' + re.escape(kw) + r'\b') for kw in keywords]
+    for sym, keywords in STOCK_KEYWORDS.items()
+}
+
+
 def detect_symbols(text):
     text_lower = text.lower()
     return [
         sym
-        for sym, keywords in STOCK_KEYWORDS.items()
-        if any(kw in text_lower for kw in keywords)
+        for sym, patterns in _SYMBOL_PATTERNS.items()
+        if any(p.search(text_lower) for p in patterns)
     ]
 
 

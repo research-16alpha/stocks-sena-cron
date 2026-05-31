@@ -230,10 +230,18 @@ def num(s: Optional[str]) -> Optional[float]:
 
 
 def to_crores(v: Optional[float]) -> Optional[float]:
-    """Convert raw XBRL ₹ value to ₹ Cr. Only converts if magnitude clearly indicates absolute rupees."""
+    """Convert raw XBRL ₹ value to ₹ Cr — ONLY a last-resort fallback for values that
+    escaped the scale-aware fact extraction above (which already handles scale=/unitRef).
+
+    The threshold MUST sit above the largest plausible value that is ALREADY in crores,
+    else it double-divides big balance sheets. India's largest total_assets is SBI at
+    ~7.3e6 cr (₹73 lakh cr); LIC ~5.6e6; HDFC Bank ~4e6. The old 1e6 threshold wrongly
+    re-divided every bank / LIC / Reliance balance sheet by 1e7 (SBI 7,314,185 -> 0.73).
+    1e8 clears all real crore values with margin, while genuine raw-rupee values that
+    slipped through (a >=₹10 cr amount filed as absolute rupees = >=1e8) still convert."""
     if v is None or v == 0:
         return v
-    if abs(v) > 1e6:
+    if abs(v) > 1e8:
         return v / 1e7
     return v
 

@@ -1,10 +1,11 @@
 name: Daily Snapshot Refresh
 
 on:
-  schedule:
-    # Twice daily — once after market close, once early morning
-    - cron: '0 12 * * 1-5'   # 12:00 UTC = 5:30 PM IST (post-close)
-    - cron: '0 2 * * *'      # 2:00 UTC = 7:30 AM IST (catch-up + weekend)
+  # schedule DISABLED 2026-05-31 - Kite is the single price/candle source (kite_daily_update.py, manual daily token). Re-enable only if reverting off Kite.
+  # schedule:
+  # # Twice daily — once after market close, once early morning
+  # - cron: '0 12 * * 1-5'   # 12:00 UTC = 5:30 PM IST (post-close)
+  # - cron: '0 2 * * *'      # 2:00 UTC = 7:30 AM IST (catch-up + weekend)
   workflow_dispatch:
 
 jobs:

@@ -1,8 +1,9 @@
 name: Daily OHLCV Refresh
 
 on:
-  schedule:
-    - cron: '30 11 * * 1-5'  # Daily 11:30 UTC = 5 PM IST (after market close 3:30)
+  # schedule DISABLED 2026-05-31 - Kite is the single price/candle source (kite_daily_update.py, manual daily token). Re-enable only if reverting off Kite.
+  # schedule:
+  # - cron: '30 11 * * 1-5'  # Daily 11:30 UTC = 5 PM IST (after market close 3:30)
   workflow_dispatch:
 
 jobs:

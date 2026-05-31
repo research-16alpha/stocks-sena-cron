@@ -231,7 +231,7 @@ def main():
                 'period_end': None,
                 'filed_at': filed_at.isoformat() if filed_at else None,
                 'source': 'BSE',
-                'source_url': f'https://www.bseindia.com/xml-data/corpfiling/AttachLive/{attachment}',
+                'source_url': f'https://www.bseindia.com/xml-data/corpfiling/AttachHis/{attachment}',
                 'file_size_kb': None,
                 'title': (ann.get('NEWSSUB') or '')[:200],
             })

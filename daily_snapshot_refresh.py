@@ -107,6 +107,13 @@ def _fetch_quote_single(yahoo_sym: str) -> dict:
         if current is not None and prev is not None and prev > 0:
             day_change = current - prev
             day_change_pct = (day_change / prev) * 100
+        # Traded value (turnover) in Rs Cr = latest_price × day's volume / 1e7.
+        # Drives the "Most Active" tab ranking. Yahoo exposes the day's volume on
+        # meta.regularMarketVolume for the 1d chart.
+        volume = meta.get('regularMarketVolume')
+        traded_value_cr = None
+        if current is not None and volume is not None and volume > 0:
+            traded_value_cr = round((current * volume) / 1e7, 2)
         return {
             'current_price': current,
             'prev_close': prev,
@@ -114,6 +121,8 @@ def _fetch_quote_single(yahoo_sym: str) -> dict:
             'day_change_pct': day_change_pct,
             'week52_high': meta.get('fiftyTwoWeekHigh'),
             'week52_low': meta.get('fiftyTwoWeekLow'),
+            'volume': volume,
+            'traded_value_cr': traded_value_cr,
             'long_name': meta.get('longName'),
             'currency': meta.get('currency'),
             '_ticker_used': yahoo_sym,
@@ -211,6 +220,8 @@ def merge_snapshot(bundle: dict, fresh: dict, derived: dict) -> dict:
         'day_change_pct': fresh.get('day_change_pct'),
         'week52_high': fresh.get('week52_high'),
         'week52_low': fresh.get('week52_low'),
+        'volume': fresh.get('volume'),
+        'traded_value_cr': fresh.get('traded_value_cr'),
         'currency': fresh.get('currency') or 'INR',
         # Computed from local fundamentals
         'pe': derived.get('pe'),

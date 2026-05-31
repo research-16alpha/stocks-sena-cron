@@ -1,9 +1,10 @@
 name: Returns Compute Daily
 
 on:
-  schedule:
-    # 12:15 UTC = 5:45 PM IST. Runs ~45 min after daily-ohlcv-cron so closes are fresh.
-    - cron: '15 12 * * 1-5'
+  # schedule DISABLED 2026-05-31 - Kite is the single price/candle source (kite_daily_update.py, manual daily token). Re-enable only if reverting off Kite.
+  # schedule:
+  # # 12:15 UTC = 5:45 PM IST. Runs ~45 min after daily-ohlcv-cron so closes are fresh.
+  # - cron: '15 12 * * 1-5'
   workflow_dispatch:
 
 jobs:

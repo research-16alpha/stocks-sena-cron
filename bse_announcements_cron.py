@@ -36,7 +36,9 @@ URL = os.environ.get('SUPABASE_URL', 'https://tbeadvvkqyrhtendttrg.supabase.co')
 H = {'apikey': KEY, 'Authorization': f'Bearer {KEY}'}
 
 BSE_ANN_API = 'https://api.bseindia.com/BseIndiaAPI/api/AnnGetData/w'
-BSE_ATTACH = 'https://www.bseindia.com/xml-data/corpfiling/AttachLive/'
+# AttachHis (historical) serves BOTH recent and old attachments; AttachLive only
+# serves the last ~week, so it 404s ("page has been moved") for everything older.
+BSE_ATTACH = 'https://www.bseindia.com/xml-data/corpfiling/AttachHis/'
 BSE_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
@@ -235,11 +237,49 @@ def main():
         else:
             scrips = [(sc, sy) for sc, sy in scrip_to_symbol.items()]
         print(f'[INFO] BACKFILL per-scrip: {len(scrips)} stocks · {from_d}->{to_d}')
+        # Incremental commit: flush every ~1500 rows so a mid-run failure can't lose
+        # everything (the all-at-end design killed the first 12-month backfill).
+        done = {'ann': 0, 'cc': 0}
+
+        def commit():
+            if not rows:
+                return
+            batch = list(rows.values())
+            if args.dry_run:
+                done['ann'] += len(batch)
+                rows.clear()
+                return
+            done['ann'] += upsert('corporate_announcements', batch, 'news_id')
+            cmap = {}
+            for r in batch:
+                if is_concall(r['headline'] + ' ' + r['detail']):
+                    fa = parse_dt(r['filed_at'])
+                    if not fa:
+                        continue
+                    d = fa - timedelta(days=45)
+                    m = d.month
+                    qn = 'Q1' if m in (4, 5, 6) else 'Q2' if m in (7, 8, 9) else 'Q3' if m in (10, 11, 12) else 'Q4'
+                    q = f"{qn}FY{(d.year + 1 if m >= 4 else d.year) % 100:02d}"
+                    cmap[(r['symbol'], q, 'BSE')] = {
+                        'symbol': r['symbol'], 'quarter': q, 'period_end': None,
+                        'filed_at': r['filed_at'], 'source': 'BSE', 'source_url': r['pdf_url'],
+                        'file_size_kb': None, 'title': r['headline'][:200]}
+            if cmap:
+                done['cc'] += upsert('concall_transcripts', list(cmap.values()), 'symbol,quarter,source')
+            rows.clear()
+
         for i, (scrip, sym) in enumerate(scrips, 1):
             ingest(fetch_window(from_d, to_d, scrip=scrip))
+            if len(rows) >= 1500:
+                commit()
             if i % 100 == 0:
-                print(f'  [{i}/{len(scrips)}] rows={len(rows)} material={stats["material"]}')
+                print(f'  [{i}/{len(scrips)}] committed={done["ann"]} material={stats["material"]}', flush=True)
             time.sleep(0.15)
+        commit()
+        print('-' * 60)
+        print(f'  announcements scanned : {stats["anns"]}')
+        print(f'  committed             : {done["ann"]} announcements, {done["cc"]} concall')
+        return
     else:
         from_d = (today - timedelta(days=args.days)).strftime('%Y%m%d')
         to_d = today.strftime('%Y%m%d')

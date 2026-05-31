@@ -1,8 +1,9 @@
 name: EOD Scraper
 
 on:
-  schedule:
-    - cron: '0 13 * * 1-5'  # Daily 1 PM UTC = 6:30 PM IST, weekdays
+  # schedule DISABLED 2026-05-31 - Kite is the single price/candle source (kite_daily_update.py, manual daily token). Re-enable only if reverting off Kite.
+  # schedule:
+  # - cron: '0 13 * * 1-5'  # Daily 1 PM UTC = 6:30 PM IST, weekdays
   workflow_dispatch:
 
 jobs:

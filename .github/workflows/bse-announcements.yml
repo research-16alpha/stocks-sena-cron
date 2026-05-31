@@ -1,0 +1,31 @@
+name: BSE Corporate Announcements (per-ticker filings)
+
+# Per-ticker "Filings" feed — every listed stock's BSE corporate announcements
+# (results, board meetings, orders, ratings, actions...). This is what gives the
+# ~2,100 microcaps news that national RSS media never covers. Also routes
+# concall-transcript filings into concall_transcripts.
+
+on:
+  schedule:
+    # Daily 14:30 UTC = 20:00 IST, weekdays — after the day's filings are in.
+    - cron: '30 14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Scrape last 3 days of BSE announcements (global recent scan)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bse_announcements_cron.py --days 3

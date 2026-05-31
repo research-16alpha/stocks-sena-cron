@@ -18,25 +18,30 @@ Output: bulk UPDATE on stock_master per symbol.
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
-from supabase import create_client
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Make this module importable for its compute_returns() helper even where the
+# supabase SDK / env vars aren't present (e.g. the stdlib-only one-off runner).
+try:
+    from supabase import create_client
+except Exception:  # pragma: no cover - SDK absent
+    create_client = None
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+sb = (
+    create_client(SUPABASE_URL, SUPABASE_KEY)
+    if (create_client and SUPABASE_URL and SUPABASE_KEY)
+    else None
+)
 
 BUCKET = "daily"
 
-# Trading days lookback. NSE: ~252/yr.
-PERIODS = {
-    "return_1m_pct": 21,
-    "return_3m_pct": 63,
-    "return_6m_pct": 126,
-    "return_1y_pct": 252,
-    "return_5y_pct": 252 * 5,
-}
+# Date-based return / 52w math lives in one shared, dependency-free module so the
+# daily Kite job, the 20y backfill and this cron can never drift apart again.
+from returns_calc import compute_returns  # noqa: E402  (re-exported below)
 
 
 def fetch_symbols() -> list[str]:
@@ -64,37 +69,6 @@ def fetch_bars(symbol: str) -> list[list] | None:
     except Exception as e:
         print(f"[WARN] {symbol}: {e}", file=sys.stderr)
         return None
-
-
-def compute_returns(bars: list[list]) -> dict | None:
-    if not bars or len(bars) < 2:
-        return None
-    closes = [b[4] for b in bars if b[4] is not None]
-    if len(closes) < 2:
-        return None
-    today = closes[-1]
-    out: dict = {"latest_price": round(today, 2)}
-    for field, lookback in PERIODS.items():
-        if len(closes) > lookback:
-            past = closes[-1 - lookback]
-            if past and past > 0:
-                out[field] = round((today / past - 1) * 100, 2)
-            else:
-                out[field] = None
-        else:
-            out[field] = None
-    # high_52w / low_52w from last 252 bars (or all if fewer)
-    window = min(252, len(bars))
-    last_year_highs = [b[2] for b in bars[-window:] if b[2] is not None]
-    last_year_lows = [b[3] for b in bars[-window:] if b[3] is not None]
-    if last_year_highs:
-        out["high_52w"] = round(max(last_year_highs), 2)
-    if last_year_lows:
-        out["low_52w"] = round(min(last_year_lows), 2)
-    # price_change_pct = today vs prev close
-    if len(closes) >= 2 and closes[-2] > 0:
-        out["price_change_pct"] = round((today / closes[-2] - 1) * 100, 2)
-    return out
 
 
 def _patch(sym: str, updates: dict) -> bool:

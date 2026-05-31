@@ -17,6 +17,7 @@ Fields synced from snapshot → stock_master:
   week52_high → high_52w
   week52_low → low_52w
   day_change_pct → price_change_pct
+  traded_value_cr → traded_value_cr   (drives the "Most Active" tab ranking)
 
 Runs in batches of 500 via PostgREST upsert. Safe to re-run.
 """
@@ -128,6 +129,8 @@ def main(workers: int = 12, batch_size: int = 400):
                 row['low_52w'] = snap['week52_low']
             if snap.get('day_change_pct') is not None:
                 row['price_change_pct'] = snap['day_change_pct']
+            if snap.get('traded_value_cr') is not None:
+                row['traded_value_cr'] = snap['traded_value_cr']
             updates.append(row)
 
     # PATCH per row, parallelised

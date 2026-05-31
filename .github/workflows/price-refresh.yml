@@ -1,0 +1,32 @@
+name: Official Price Refresh (NSE bhavcopy + BSE)
+
+# Authoritative latest_price from the official exchanges, overriding the Yahoo
+# snapshot (which serves stale prices for suspended / illiquid / BSE-only stocks,
+# e.g. Ballarpur ₹257 on Yahoo vs the real BSE ₹0.89). Runs AFTER the snapshot
+# sync so it has the final say on latest_price.
+
+on:
+  # schedule DISABLED 2026-05-31 - Kite is the single price/candle source (kite_daily_update.py, manual daily token). Re-enable only if reverting off Kite.
+  # schedule:
+  # # Daily 14:15 UTC = 19:45 IST, weekdays — after NSE publishes the bhavcopy.
+  # - cron: '15 14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Refresh prices from NSE bhavcopy + BSE quotes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python refresh_prices_official.py

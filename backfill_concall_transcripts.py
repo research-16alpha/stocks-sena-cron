@@ -50,13 +50,17 @@ BSE_HEADERS = {
     'Referer': 'https://www.bseindia.com/corporates/ann.html',
 }
 
-# Concall keywords (case-insensitive)
-KEYWORDS = ('transcript', 'earnings call', 'conference call', 'analyst call', 'investor call')
+# A real transcript filing says "transcript". Broad call-keywords also match
+# pre-call intimations / audio-link notices, which are NOT transcripts — exclude them.
+EXCLUDE = ('intimation', 'schedule of', 'notice of', 'will be held', 'audio recording',
+           'audio clip', 'recording of', 'weblink', 'web link', 'link for', 'link of', 'newspaper')
 
 
 def is_transcript(subject: str) -> bool:
     s = (subject or '').lower()
-    return any(k in s for k in KEYWORDS)
+    if 'transcript' not in s:
+        return False
+    return not any(k in s for k in EXCLUDE)
 
 
 def fiscal_quarter(d: datetime) -> str:

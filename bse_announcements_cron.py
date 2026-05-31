@@ -46,7 +46,12 @@ BSE_HEADERS = {
     'Referer': 'https://www.bseindia.com/corporates/ann.html',
 }
 
-CONCALL_KEYWORDS = ('transcript', 'earnings call', 'conference call', 'analyst call', 'investor call')
+# A real concall TRANSCRIPT filing says "transcript". The broad 'conference call' /
+# 'earnings call' / 'investor call' keywords also match pre-call INTIMATIONS and
+# audio-link notices (72% of hits) — those are NOT transcripts, so we exclude them.
+CONCALL_EXCLUDE = ('intimation', 'schedule of', 'notice of', 'will be held',
+                   'audio recording', 'audio clip', 'recording of', 'weblink',
+                   'web link', 'link for', 'link of', 'newspaper')
 
 # Subject keywords that mark a "Company Update" as ROUTINE boilerplate (not material
 # news). Everything else in a meaningful category is treated as material.
@@ -67,7 +72,9 @@ MATERIAL_CATEGORIES = {
 
 def is_concall(text: str) -> bool:
     s = (text or '').lower()
-    return any(k in s for k in CONCALL_KEYWORDS)
+    if 'transcript' not in s:          # must actually be a transcript filing
+        return False
+    return not any(k in s for k in CONCALL_EXCLUDE)
 
 
 def is_material(category: str, subject: str) -> bool:

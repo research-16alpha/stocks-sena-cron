@@ -27,13 +27,25 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+# All feeds verified live 2026-05-31. Source label = publisher (shown in the UI);
+# multiple category feeds per publisher are fine — dedupe is by unique source_url.
+# Removed dead feeds: reuters_india (connection dead), business_standard (403),
+# financial_express (invalid XML), zeebiz (403).
 RSS_FEEDS = [
-    ("moneycontrol", "https://www.moneycontrol.com/rss/business.xml"),
-    ("et_markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
-    ("mint", "https://www.livemint.com/rss/markets"),
-    ("business_standard", "https://www.business-standard.com/rss/markets-106.rss"),
-    ("reuters_india", "https://feeds.reuters.com/reuters/INbusinessNews"),
-    ("bl_markets", "https://www.thehindubusinessline.com/markets/feeder/default.rss"),
+    ("Moneycontrol",   "https://www.moneycontrol.com/rss/business.xml"),
+    ("Moneycontrol",   "https://www.moneycontrol.com/rss/marketreports.xml"),
+    ("Moneycontrol",   "https://www.moneycontrol.com/rss/results.xml"),
+    ("Moneycontrol",   "https://www.moneycontrol.com/rss/buzzingstocks.xml"),
+    ("Moneycontrol",   "https://www.moneycontrol.com/rss/latestnews.xml"),
+    ("Economic Times", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
+    ("Economic Times", "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms"),
+    ("Economic Times", "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms"),
+    ("LiveMint",       "https://www.livemint.com/rss/markets"),
+    ("LiveMint",       "https://www.livemint.com/rss/companies"),
+    ("BusinessLine",   "https://www.thehindubusinessline.com/markets/feeder/default.rss"),
+    ("BusinessLine",   "https://www.thehindubusinessline.com/companies/feeder/default.rss"),
+    ("NDTV Profit",    "https://feeds.feedburner.com/ndtvprofit-latest"),
+    ("Indian Express", "https://indianexpress.com/section/business/feed/"),
 ]
 
 HEADERS = {

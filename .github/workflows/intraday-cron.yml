@@ -7,9 +7,10 @@ name: Intraday OHLCV Refresh
 # (each ~195 min, under GitHub's 6h limit) cover the full 09:15-15:30 IST session.
 
 on:
-  schedule:
-    - cron: '50 3 * * 1-5'   # 03:50 UTC = 09:20 IST → loops through the morning
-    - cron: '0 7 * * 1-5'    # 07:00 UTC = 12:30 IST → loops through to the close
+  # schedule DISABLED 2026-05-31 - Kite is the single price/candle source (kite_daily_update.py, manual daily token). Re-enable only if reverting off Kite.
+  # schedule:
+  # - cron: '50 3 * * 1-5'   # 03:50 UTC = 09:20 IST → loops through the morning
+  # - cron: '0 7 * * 1-5'    # 07:00 UTC = 12:30 IST → loops through to the close
   workflow_dispatch:
 
 jobs:

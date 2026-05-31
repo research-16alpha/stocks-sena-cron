@@ -68,6 +68,18 @@ SUFFIX_RX = re.compile(
     r'\s+(ltd\.?|limited|industries|company|corporation|corp\.?|inc\.?|pvt\.?|private|holdings?|group|enterprises)\.?\s*$',
     re.IGNORECASE,
 )
+LEADING_ARTICLE_RX = re.compile(r'^(the)\s+', re.IGNORECASE)
+
+# Tokens that are too generic to identify a single company on their own. A name
+# made up ENTIRELY of these (e.g. "Bank of India", "Central Bank") is skipped —
+# it would false-match "Reserve Bank of India", "European Central Bank", etc.
+GENERIC_TOKENS = {
+    'bank', 'india', 'indian', 'the', 'new', 'national', 'central', 'state',
+    'finance', 'financial', 'corp', 'corporation', 'power', 'steel', 'motors',
+    'cement', 'chemicals', 'textiles', 'auto', 'ltd', 'limited', 'industries',
+    'company', 'enterprises', 'holdings', 'group', 'services', 'products',
+    'of', 'and', 'global', 'international', 'general', 'first', 'union',
+}
 
 
 def fetch_stock_master() -> list:
@@ -87,16 +99,10 @@ def fetch_stock_master() -> list:
             if sym.startswith('BSE_') or (sym.startswith('BSE') and sym[3:].isdigit()):
                 continue
             name = row.get('name') or sym
-            # Strip suffix words
+            # Strip suffix words + a leading "The" so "The Federal Bank Ltd" -> "Federal Bank"
             clean = SUFFIX_RX.sub('', name).strip()
-            # First two distinctive words (e.g., "Reliance Industries" -> ["Reliance Industries"])
-            words = clean.split()
-            # Use only the brand-distinctive part (first 2 words, or full if shorter)
-            if len(words) >= 2:
-                brand = ' '.join(words[:2])
-            else:
-                brand = clean
-            out.append((sym, brand.lower(), clean.lower()))
+            clean = LEADING_ARTICLE_RX.sub('', clean).strip()
+            out.append((sym, clean.lower()))
         if len(batch) < 1000:
             break
         offset += 1000
@@ -162,25 +168,28 @@ def patch_categories(items_with_cat: list) -> int:
 
 
 def tag_one(item: dict, stock_list: list) -> list:
-    """Returns list of (news_id, symbol) tuples discovered in headline+summary."""
+    """Returns list of (news_id, symbol) tuples discovered in headline+summary.
+
+    PRECISION-FIRST: match the full distinctive company name (suffix + leading
+    article stripped) as a WHOLE phrase with word boundaries. We deliberately do
+    NOT match the bare NSE symbol — many tickers are common English words
+    (GLOBAL, DOLLAR, FOCUS, RETAIL, TOTAL, TECHNO) and matching them as words
+    tagged every "global markets"/"dollar"/"retail" headline to a random stock.
+    We also skip names made entirely of generic tokens ("Bank of India") which
+    would false-match "Reserve Bank of India" etc. Showing fewer but CORRECT
+    tags beats leaking unrelated market news onto a stock page.
+    """
     text = (item.get('headline') or '') + ' ' + (item.get('summary') or '')
     text_lower = text.lower()
-    text_upper = text.upper()
 
     found = set()
-    for sym, brand_lower, full_lower in stock_list:
-        # Skip overly-generic symbols
-        if sym in DENY_SYMBOLS or len(sym) < 4:
-            # short symbols only matched via company name
-            if brand_lower and brand_lower in text_lower and len(brand_lower) >= 6:
-                found.add(sym)
+    for sym, full_lower in stock_list:
+        if len(full_lower) < 7:                    # too short to be safely distinctive
             continue
-        # Symbol exact match with word boundary
-        if re.search(r'\b' + re.escape(sym) + r'\b', text_upper):
-            found.add(sym)
+        toks = full_lower.split()
+        if all(t in GENERIC_TOKENS for t in toks):  # purely generic name -> skip
             continue
-        # Brand match (first 2 words of company name)
-        if brand_lower and len(brand_lower) >= 6 and brand_lower in text_lower:
+        if re.search(r'\b' + re.escape(full_lower) + r'\b', text_lower):
             found.add(sym)
     return [(item['id'], s) for s in found]
 

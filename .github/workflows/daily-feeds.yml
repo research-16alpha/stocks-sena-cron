@@ -1,0 +1,37 @@
+name: Daily Feeds (insider / ratings / SAST / concall / deals)
+
+# Daily incremental refresh of the NSE-sourced feeds — moved OFF the Windows
+# laptop (Task Scheduler), which only ran when the laptop was on, INTO the cloud.
+# Idempotent: fetches only the last FEED_DAYS window and inserts rows not already
+# present. Hits NSE for small recent windows (not per-stock loops), like the other
+# NSE crons that already run fine from Actions (corp-actions, bulk-deals, fii-dii).
+
+on:
+  schedule:
+    - cron: '30 13 * * *'   # 13:30 UTC = 7:00 PM IST, after market close
+  workflow_dispatch:
+    inputs:
+      feed_days:
+        description: 'lookback window in days'
+        required: false
+        default: '12'
+
+jobs:
+  feeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Daily incremental feeds
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FEED_DAYS: ${{ github.event.inputs.feed_days || '12' }}
+        run: python daily_feeds.py

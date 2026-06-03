@@ -29,7 +29,9 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # kiteconnect is installed only here (not in the shared requirements.txt)
+        # so the other 36 crons' dependency resolution is untouched.
+        run: pip install -r requirements.txt kiteconnect==4.2.0
       - name: Kite daily update (token from app_config)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

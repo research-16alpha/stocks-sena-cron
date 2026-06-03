@@ -216,6 +216,33 @@ def parse_xbrl_text(text: str) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dic
             else:
                 facts[tag][ctx] = raw
 
+    # ── Recover contexts referenced by facts but never <xbrli:context>-defined.
+    # Older SEBI taxonomy (in-bse-fin 2019-09-30, FY18-FY21) omits the non-dimensional
+    # OneD/FourD/*I context definitions entirely - only dimensional contexts are declared,
+    # yet facts still carry contextRef="FourD" (full-year YTD) / "OneD" (Q4) / "...I" (instant).
+    # Reconstruct them from the always-present DateOf*FinancialYear / reporting-period facts
+    # so pick_top_level_period() and the NSE-style fallback can find the annual context.
+    # Year-end-agnostic: copies the filing's own declared dates (Dec year-ends work too).
+    def _first_fact(tag):
+        d = facts.get(tag) or {}
+        return next(iter(d.values()), None)
+    referenced = set()
+    for _d in facts.values():
+        referenced.update(_d.keys())
+    undefined = referenced - set(contexts.keys())
+    if undefined:
+        fy_start = _first_fact('DateOfStartOfFinancialYear')
+        fy_end = _first_fact('DateOfEndOfFinancialYear')
+        rp_start = _first_fact('DateOfStartOfReportingPeriod')
+        rp_end = _first_fact('DateOfEndOfReportingPeriod')
+        for cid in undefined:
+            if cid.endswith('I') and fy_end:
+                contexts[cid] = {'type': 'instant', 'date': fy_end, 'dim': False, 'dimensions': None}
+            elif cid in ('FourD', 'EightD') and fy_start and fy_end:
+                contexts[cid] = {'type': 'period', 'start': fy_start, 'end': fy_end, 'dim': False, 'dimensions': None}
+            elif rp_start and rp_end:
+                contexts[cid] = {'type': 'period', 'start': rp_start, 'end': rp_end, 'dim': False, 'dimensions': None}
+
     return facts, contexts
 
 
@@ -376,7 +403,7 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     cost_materials = fnum('CostOfMaterialsConsumed', p)
     employee = fnum('EmployeeBenefitExpense', p) or fnum('StaffCost', p)
     finance_costs = fnum('FinanceCosts', p) or fnum('Interest', p)
-    depreciation = fnum('DepreciationDepletionAndAmortisationExpense', p) or fnum('Depreciation', p)
+    depreciation = fnum('DepreciationDepletionAndAmortisationExpense', p) or fnum('DepreciationAndAmortisationExpense', p) or fnum('Depreciation', p)
     other_expenses = fnum('OtherExpenses', p) or fnum('OtherExpenditure', p)
     purchases = fnum('PurchasesOfStockInTrade', p)
     inv_change = fnum('ChangesInInventoriesOfFinishedGoodsWorkInProgressAndStockInTrade', p)
@@ -389,7 +416,9 @@ def parse_annual_file(path: str) -> Optional[Dict]:
     # ProfitLossForPeriod. Add that as a fallback so net_profit isn't 0 for banks.
     net_profit = (
         fnum('ProfitLossForPeriod', p)
+        or fnum('ProfitLossForThePeriod', p)                          # old in-bse-fin 2019-09-30 taxonomy
         or fnum('ProfitLossForPeriodFromContinuingOperations', p)
+        or fnum('ProfitLossForThePeriodFromContinuingOperations', p)  # old taxonomy
         or fnum('NetProfit', p)
         or fnum('ProfitLossFromOrdinaryActivitiesAfterTax', p)
     )
@@ -940,10 +969,10 @@ def parse_quarterly_file(path: str) -> Optional[Dict]:
     expenses = fnum('Expenses')
     employee = fnum('EmployeeBenefitExpense') or fnum('StaffCost') or fnum('EmployeesCost')
     finance_costs = fnum('FinanceCosts') or fnum('Interest')
-    depreciation = fnum('DepreciationDepletionAndAmortisationExpense') or fnum('Depreciation')
+    depreciation = fnum('DepreciationDepletionAndAmortisationExpense') or fnum('DepreciationAndAmortisationExpense') or fnum('Depreciation')
     pbt = fnum('ProfitBeforeTax') or fnum('ProfitLossFromOrdinaryActivitiesBeforeTax')
     tax = fnum('TaxExpense')
-    net_profit = fnum('ProfitLossForPeriod') or fnum('ProfitLossForPeriodFromContinuingOperations') or fnum('NetProfit') or fnum('ProfitLossFromOrdinaryActivitiesAfterTax')
+    net_profit = fnum('ProfitLossForPeriod') or fnum('ProfitLossForThePeriod') or fnum('ProfitLossForPeriodFromContinuingOperations') or fnum('ProfitLossForThePeriodFromContinuingOperations') or fnum('NetProfit') or fnum('ProfitLossFromOrdinaryActivitiesAfterTax')
 
     # ── Bank-style quarterly fields ──
     interest_expended = fnum('InterestExpended')

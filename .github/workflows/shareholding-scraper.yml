@@ -33,4 +33,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ONLY_SYMBOL: ${{ inputs.only_symbol }}
+          MAX_PER_RUN: '600'
+          RUN_BUDGET_MIN: '200'
         run: python shareholding_scraper.py

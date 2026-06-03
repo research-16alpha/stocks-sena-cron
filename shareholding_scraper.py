@@ -390,29 +390,44 @@ def fetch_symbols(limit: int = 0) -> list[str]:
     The NSE master endpoint returns nothing for BSE-only scrip codes
     (BSE543765 etc.) so we filter those out — everything else gets scraped
     regardless of market cap."""
-    out: list[str] = []
+    # All active non-BSE symbols (BSE-only stocks are covered by bse-shareholding).
+    syms: list[str] = []
     offset = 0
     while True:
         res = (
-            sb.table("stock_master")
-            .select("symbol")
-            .order("symbol")
-            .range(offset, offset + 999)
-            .execute()
+            sb.table("stock_master").select("symbol")
+            .eq("is_active", True).order("symbol")
+            .range(offset, offset + 999).execute()
+        )
+        batch = res.data or []
+        if not batch:
+            break
+        syms += [r["symbol"] for r in batch if not r["symbol"].startswith("BSE")]
+        if len(batch) < 1000:
+            break
+        offset += 1000
+    # Order by STALENESS so each capped run advances through the universe instead of
+    # re-walking the alphabetical head every time (the old death-spiral). Symbols whose
+    # stored shareholding is oldest — or never fetched — go first.
+    last_seen: dict[str, str] = {}
+    offset = 0
+    while True:
+        res = (
+            sb.table("shareholding_periods").select("symbol,fetched_at")
+            .order("fetched_at", desc=True).range(offset, offset + 999).execute()
         )
         batch = res.data or []
         if not batch:
             break
         for r in batch:
-            sym = r["symbol"]
-            if not sym.startswith("BSE"):
-                out.append(sym)
+            s = r.get("symbol")
+            if s and s not in last_seen:
+                last_seen[s] = r.get("fetched_at") or ""
         if len(batch) < 1000:
             break
         offset += 1000
-        if limit and len(out) >= limit:
-            break
-    return out[:limit] if limit else out
+    syms.sort(key=lambda s: last_seen.get(s, ""))  # "" (never fetched) sorts first
+    return syms[:limit] if limit else syms
 
 
 def main():
@@ -427,9 +442,14 @@ def main():
         symbols = fetch_symbols(max_n)
 
     session = warm_session()
-    print(f"[shp] processing {len(symbols)} stocks")
+    budget = int(os.environ.get("RUN_BUDGET_MIN", "200")) * 60
+    t0 = time.time()
+    print(f"[shp] processing {len(symbols)} stocks (stalest first, budget {budget // 60}m)")
 
     for i, sym in enumerate(symbols, 1):
+        if time.time() - t0 > budget:
+            print(f"[shp] time budget reached at {i}/{len(symbols)} — stopping; resumes next run")
+            break
         status = process_symbol(session, sym)
         if i <= 5 or i % 20 == 0 or "FAILED" in status or "holders" in status:
             print(f"[shp] {i:3d}. {status}")

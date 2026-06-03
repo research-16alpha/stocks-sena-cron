@@ -24,25 +24,44 @@ except ImportError:
     sys.exit(1)
 
 
+def _service_key() -> str | None:
+    k = os.environ.get('SUPABASE_SERVICE_KEY')
+    if k:
+        return k
+    try:
+        with open(r'e:\Stocks sena\.supabase-service-key') as f:
+            return f.read().strip()
+    except Exception:
+        return None
+
+
 def load_kite_credentials() -> dict:
-    """Two paths: env vars (GitHub Actions secret) or local file."""
+    """Daily Kite token: app_config DB (shared single source) -> env vars -> local file."""
+    # 1) app_config (the same daily token the website + price cron use)
+    svc = _service_key()
+    base = os.environ.get('SUPABASE_URL', 'https://tbeadvvkqyrhtendttrg.supabase.co').rstrip('/')
+    if svc:
+        try:
+            req = urllib.request.Request(
+                f"{base}/rest/v1/app_config?select=key,value&key=in.(kite_api_key,kite_access_token)",
+                headers={'apikey': svc, 'Authorization': f'Bearer {svc}'})
+            data = json.loads(urllib.request.urlopen(req, timeout=15).read())
+            cfg = {r['key']: (r.get('value') or '') for r in data}
+            if cfg.get('kite_api_key') and cfg.get('kite_access_token'):
+                return {'api_key': cfg['kite_api_key'], 'access_token': cfg['kite_access_token']}
+        except Exception as e:
+            print(f'[warn] app_config kite creds: {e}', file=sys.stderr)
+    # 2) env vars
     api_key = os.environ.get('KITE_API_KEY')
     access_token = os.environ.get('KITE_ACCESS_TOKEN')
     if api_key and access_token:
         return {'api_key': api_key, 'access_token': access_token}
-    # Fallback: local file (for dev runs from PC)
-    cred_file = r'e:\Stocks sena\.kite-credentials'
-    if not os.path.exists(cred_file):
-        print('[ERR] No Kite credentials (env or .kite-credentials)', file=sys.stderr)
+    # 3) local JSON file (dev runs)
+    try:
+        return json.load(open(r'e:\Stocks sena\.kite-credentials'))
+    except Exception:
+        print('[ERR] No Kite credentials (app_config / env / file)', file=sys.stderr)
         sys.exit(1)
-    creds = {}
-    with open(cred_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line or '=' not in line: continue
-            k, v = line.split('=', 1)
-            creds[k.strip()] = v.strip()
-    return creds
 
 
 def fetch_nifty_pcr(kite: KiteConnect) -> dict | None:
@@ -125,9 +144,9 @@ def fetch_nifty_pcr(kite: KiteConnect) -> dict | None:
 
 
 def upload_to_supabase(row: dict) -> bool:
-    with open(r'e:\Stocks sena\.supabase-service-key') as f:
-        key = f.read().strip()
-    url = 'https://tbeadvvkqyrhtendttrg.supabase.co/rest/v1/nifty_pcr_history'
+    key = _service_key()
+    base = os.environ.get('SUPABASE_URL', 'https://tbeadvvkqyrhtendttrg.supabase.co').rstrip('/')
+    url = f'{base}/rest/v1/nifty_pcr_history'
     h = {
         'apikey': key, 'Authorization': f'Bearer {key}',
         'Content-Type': 'application/json',

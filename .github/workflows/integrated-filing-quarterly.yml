@@ -17,7 +17,7 @@ on:
 jobs:
   bank-quarterly:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +34,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python integrated_filing_quarterly.py --since 2025-01-01
+        run: python integrated_filing_quarterly.py --since 2025-01-01 --use-cache
 
       # M2: recompute so latest_quarter_period + TTM ratios reflect the new quarters
       - name: Recompute derived metrics (TTM)

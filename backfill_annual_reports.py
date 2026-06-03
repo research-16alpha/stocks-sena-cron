@@ -132,6 +132,27 @@ def fetch_v2_symbols() -> list:
     return [s for s in syms if not s.startswith('BSE_') and not (s.startswith('BSE') and s[3:].isdigit())]
 
 
+def symbols_with_ar() -> set:
+    """Symbols that already have at least one annual_reports row (for ordering)."""
+    have, offset = set(), 0
+    while True:
+        try:
+            r = requests.get(f'{URL}/rest/v1/annual_reports?select=symbol',
+                             headers={**H, 'Range': f'{offset}-{offset + 999}'}, timeout=30)
+            data = r.json() if r.status_code in (200, 206) else []
+        except Exception:
+            break
+        if not data:
+            break
+        for row in data:
+            if row.get('symbol'):
+                have.add(row['symbol'])
+        if len(data) < 1000:
+            break
+        offset += 1000
+    return have
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--syms', type=str, default='')
@@ -143,9 +164,15 @@ def main():
     else:
         print('[INFO] Listing fundamentals-v2 stocks...')
         syms = fetch_v2_symbols()
+        # Stocks with NO annual_reports yet go first, so a time-boxed run grows
+        # coverage instead of re-walking the alphabetical head every run.
+        have = symbols_with_ar()
+        syms.sort(key=lambda s: s in have)
     if args.limit:
         syms = syms[:args.limit]
-    print(f'[INFO] Backfill ARs for {len(syms)} stocks')
+    budget = int(os.environ.get('PROCESS_BUDGET_MIN', '0')) * 60
+    print(f'[INFO] Backfill ARs for {len(syms)} stocks'
+          + (f' (budget {budget // 60}m)' if budget else ''))
 
     session = prime_nse_session()
     total_rows = 0
@@ -153,6 +180,9 @@ def main():
     t0 = time.time()
 
     for i, sym in enumerate(syms, 1):
+        if budget and time.time() - t0 > budget:
+            print(f'[INFO] budget reached at {i}/{len(syms)} — stopping; resumes next run')
+            break
         ar_list = fetch_ar_list(session, sym)
         if not ar_list:
             no_data += 1

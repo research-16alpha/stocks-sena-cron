@@ -1,0 +1,37 @@
+name: Kite Daily Update (prices + candles, token from DB)
+
+# The EVERYDAY price/candle refresh — moved off the laptop into the cloud.
+# Reads the daily Kite access token from the app_config table (the user refreshes
+# it each morning; no redeploy, no laptop). Kite is the single price source.
+# Fails loud (picked up by monitor.yml) if the token is missing/expired.
+
+on:
+  schedule:
+    # 10:20 UTC = 3:50 PM IST, just after the NSE close. The morning token is
+    # still valid at this hour (Kite tokens last until ~next pre-open).
+    - cron: '20 10 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      args:
+        description: 'extra args, e.g. --prices-only or --no-intraday'
+        required: false
+        default: '--no-intraday'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Kite daily update (token from app_config)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python kite_daily_update.py --workers 4 ${{ github.event.inputs.args || '--no-intraday' }}

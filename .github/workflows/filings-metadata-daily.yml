@@ -26,6 +26,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PROCESS_BUDGET_MIN: '75'
         run: python backfill_annual_reports.py
 
   concall-metadata:
@@ -47,4 +48,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python backfill_concall_transcripts.py --years 0 --from-date $(date -u -d "60 days ago" +%Y%m%d) --to-date $(date -u +%Y%m%d)
+        run: python backfill_concall_transcripts.py --years 0 --from-date $(date -u -d "30 days ago" +%Y%m%d) --to-date $(date -u +%Y%m%d)

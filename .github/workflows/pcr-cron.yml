@@ -21,11 +21,10 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt kiteconnect==4.2.0
 
-      - name: Fetch NIFTY option chain + compute PCR
+      - name: Fetch NIFTY PCR via Kite (token from app_config)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          SKIP_MARKET_CHECK: '0'
-        run: python pcr_cron.py
+        run: python pcr_cron_kite.py

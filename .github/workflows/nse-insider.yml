@@ -1,0 +1,36 @@
+name: NSE Insider Trading (PIT XBRL)
+
+# NSE froze the legacy /api/corporates-pit JSON at ~April 2026 and moved live
+# insider disclosures to /api/corporates-pit-gg (a list of XBRL filings). This
+# pulls that list, parses each XBRL for the structured transaction(s), and writes
+# insider_trades (deduped app-side). Runs from the cloud, laptop-independent.
+
+on:
+  schedule:
+    - cron: '0 13 * * 1-5'    # 18:30 IST
+    - cron: '30 17 * * 1-5'   # 23:00 IST — catches late-evening filings
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'lookback window in days'
+        required: false
+        default: '7'
+
+jobs:
+  insider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: NSE insider XBRL -> insider_trades
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python nse_insider_xbrl_cron.py --days ${{ github.event.inputs.days || '7' }}

@@ -107,6 +107,28 @@ def compute_eps_ttm(bundle) -> float | None:
     return None
 
 
+def compute_np_ttm(bundle) -> float | None:
+    """Net profit TTM (Rs cr). Split-IMMUNE: unlike summing per-share quarterly EPS, net
+    profit is unaffected by stock splits/bonuses. Summing EPS across a split mixes pre- and
+    post-split per-share figures (e.g. Websol's 15.92+10.97+1.54+2.75) and produces a wrong
+    P/E (3.5 vs the correct 16). Net profit (mcap / NP) avoids that entirely."""
+    if not bundle: return None
+    qrs = (bundle.get('quarterly_results') or bundle.get('quarterly_results_consolidated') or bundle.get('quarterly_results_standalone') or [])[-4:]
+    if len(qrs) >= 4:
+        np_ttm = sum((r.get('net_profit') or 0) for r in qrs)
+        if np_ttm and np_ttm > 0:
+            return round(np_ttm, 2)
+    pl = bundle.get('annual_pl') or bundle.get('annual_pl_consolidated') or bundle.get('annual_pl_standalone') or []
+    if pl:
+        np = (pl[-1] or {}).get('net_profit')
+        if np and np > 0:
+            return round(np, 2)
+    return None
+
+
+RECOMPUTE_PE = False  # --recompute-pe: also overwrite materially-wrong existing P/Es
+
+
 def patch_row(sym, body):
     if not body: return 0
     url = f'{SUPABASE_URL}/rest/v1/stock_master?symbol=eq.{sym}'
@@ -134,10 +156,15 @@ def process_one(s):
         shares_cr = compute_shares_outstanding(bundle)
         if shares_cr and shares_cr > 0:
             body['market_cap_cr'] = round(price * shares_cr, 2)
-    if not s.get('pe_ratio'):
-        eps_ttm = compute_eps_ttm(bundle)
-        if eps_ttm and eps_ttm > 0:
-            body['pe_ratio'] = round(price / eps_ttm, 2)
+    # P/E = market cap / net-profit-TTM (split-immune). The old price / sum(quarterly EPS)
+    # mis-priced any stock that split/bonused in the trailing year.
+    np_ttm = compute_np_ttm(bundle)
+    mcap = s.get('market_cap_cr') or body.get('market_cap_cr')
+    if mcap and np_ttm and np_ttm > 0:
+        new_pe = round(mcap / np_ttm, 2)
+        old_pe = s.get('pe_ratio')
+        if old_pe is None or (RECOMPUTE_PE and abs(old_pe - new_pe) > max(0.5, new_pe * 0.05)):
+            body['pe_ratio'] = new_pe
 
     if not body:
         return ('NO_NEW_DATA', sym, {})
@@ -147,15 +174,22 @@ def process_one(s):
 
 
 def main():
+    import sys
+    global RECOMPUTE_PE
+    RECOMPUTE_PE = '--recompute-pe' in sys.argv
+    syms_arg = next((a.split('=', 1)[1] for a in sys.argv if a.startswith('--syms=')), None)
+    only = set(s.strip().upper() for s in syms_arg.split(',')) if syms_arg else None
+
     print('[load] active stocks from stock_master...')
     master = fetch_master()
-    print(f'  {len(master)} active stocks')
+    if only:
+        master = [s for s in master if s['symbol'].upper() in only]
+    print(f'  {len(master)} active stocks  (recompute_pe={RECOMPUTE_PE})')
 
-    needs_mcap = [s for s in master if not s.get('market_cap_cr') and s.get('latest_price')]
-    needs_pe = [s for s in master if not s.get('pe_ratio') and s.get('latest_price')]
-    target = [s for s in master if (not s.get('market_cap_cr') or not s.get('pe_ratio')) and s.get('latest_price')]
-    print(f'  Need mcap: {len(needs_mcap)}')
-    print(f'  Need PE  : {len(needs_pe)}')
+    if RECOMPUTE_PE:
+        target = [s for s in master if s.get('latest_price')]
+    else:
+        target = [s for s in master if (not s.get('market_cap_cr') or not s.get('pe_ratio')) and s.get('latest_price')]
     print(f'  Total to process: {len(target)}')
 
     t0 = time.time()

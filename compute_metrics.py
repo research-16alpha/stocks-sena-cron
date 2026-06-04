@@ -202,10 +202,21 @@ def compute(d, use_ttm=False):
 
     total_equity = pick_equity(bs)
     equity_capital = g(bs, 'equity_capital')
-    borrowings = g(bs, 'borrowings')
-    if borrowings is None:
-        bc, bnc = g(bs, 'borrowings_current'), g(bs, 'borrowings_noncurrent')
-        borrowings = (bc or 0) + (bnc or 0) if (bc is not None or bnc is not None) else None
+
+    def _borrowings_of(_bs):
+        b = g(_bs, 'borrowings')
+        if b is None:
+            c, n = g(_bs, 'borrowings_current'), g(_bs, 'borrowings_noncurrent')
+            b = (c or 0) + (n or 0) if (c is not None or n is not None) else None
+        return b
+    borrowings = _borrowings_of(bs)
+    # Prior-year balance sheet -> ROE/ROCE on AVERAGE equity / capital employed (the standard
+    # Screener convention). Using year-end alone understates ROE for a company whose equity
+    # grew sharply that year (e.g. Websol 48% vs the correct ~67%).
+    prev_bs = bs_series[-2] if (bs_series and len(bs_series) >= 2) else None
+    prev_equity = pick_equity(prev_bs) if prev_bs else None
+    prev_borrowings = _borrowings_of(prev_bs) if prev_bs else None
+    avg_equity = ((total_equity + prev_equity) / 2) if (total_equity is not None and prev_equity is not None and prev_equity > 0) else total_equity
     cash = (g(bs, 'cash_equivalents') or 0) + (g(bs, 'bank_balance') or 0)
     net_profit = g(pl, 'net_profit', 'pat_ordinary')
     pbt = g(pl, 'pbt', 'pbt_ordinary')
@@ -242,9 +253,9 @@ def compute(d, use_ttm=False):
             bvps = cand
             snap_patch['book_value'] = bvps
 
-    # ROE  (gate -100..200)
-    if net_profit is not None and total_equity and total_equity > 0:
-        roe = sane(round(net_profit / total_equity * 100, 2), -100, 200)
+    # ROE on AVERAGE shareholders' equity (Screener convention; gate -100..300)
+    if net_profit is not None and avg_equity and avg_equity > 0:
+        roe = sane(round(net_profit / avg_equity * 100, 2), -100, 300)
         if roe is not None:
             m['roe_pct'] = roe
             snap_patch['roe'] = roe
@@ -265,6 +276,11 @@ def compute(d, use_ttm=False):
             ebit = op
         if ebit is not None and total_equity is not None and borrowings is not None:
             ce = total_equity + borrowings
+            # average capital employed (opening + closing) when a prior year exists
+            if prev_equity is not None and prev_borrowings is not None:
+                ce_prev = prev_equity + prev_borrowings
+                if ce_prev > 0:
+                    ce = (ce + ce_prev) / 2
             if ce > 0:
                 roce = sane(round(ebit / ce * 100, 2), -100, 300)
                 if roce is not None:

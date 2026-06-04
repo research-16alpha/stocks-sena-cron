@@ -1,0 +1,43 @@
+name: Intraday Live Movers (Kite quotes -> stock_master)
+
+# Makes the website/app movers tabs LIVE during market hours. Each trigger runs one
+# job that loops internally every 15 min, pulling a batched Kite quote for the liquid
+# universe and writing latest_price, price_change_pct, traded_value_cr and
+# rvol_1d/1w/1m to stock_master. Two long triggers (morning + afternoon), each well
+# under GitHub's 6h job cap, cover the full 09:15-15:30 IST session — the same
+# pattern as intraday-cron.yml (GitHub silently drops most */5 high-frequency crons).
+#
+# Requires the daily Kite token in app_config (the user pastes it each morning); the
+# cron reads it via the service key, no redeploy needed.
+
+on:
+  schedule:
+    - cron: '50 3 * * 1-5'   # 03:50 UTC = 09:20 IST -> loops through the morning
+    - cron: '0 7 * * 1-5'    # 07:00 UTC = 12:30 IST -> loops through to the close
+  workflow_dispatch:
+    inputs:
+      interval:
+        description: 'seconds between refreshes'
+        default: '900'
+      min_mcap:
+        description: 'only refresh stocks >= this mcap (Cr); 0 = all'
+        default: '50'
+
+jobs:
+  movers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 205   # > the 195-min loop; under GitHub's 6h cap
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Live movers refresh (internal 15-min loop until close)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python intraday_movers_cron.py --loop --interval ${{ github.event.inputs.interval || '900' }} --max-minutes 195 --min-mcap ${{ github.event.inputs.min_mcap || '50' }}

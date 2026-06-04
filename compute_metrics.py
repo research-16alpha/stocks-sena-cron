@@ -345,6 +345,17 @@ def compute(d, use_ttm=False):
         if 1 < mc < 2_000_000:
             m['market_cap_cr'] = mc
 
+    # P/E = market cap / net-profit-TTM (split-immune; net profit, unlike summing per-share
+    # EPS, is unaffected by stock splits). Recomputed here daily with the fresh price so it
+    # never goes stale. Same fresh-price gate (H9) as pb / ev / mcap.
+    if val_price and net_profit is not None and net_profit > 0:
+        mcap_pe = m.get('market_cap_cr') or g(snap, 'market_cap_cr')
+        if mcap_pe and mcap_pe > 0:
+            pe = sane(round(mcap_pe / net_profit, 2), 0, 5000)
+            if pe is not None:
+                m['pe_ratio'] = pe
+                snap_patch['pe'] = pe
+
     if use_ttm:
         m['_basis'] = metrics_basis              # ignored by patch_stock_master (not a SM_COL)
         snap_patch['metrics_basis'] = metrics_basis

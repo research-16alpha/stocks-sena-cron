@@ -1,0 +1,37 @@
+name: NSE Corporate Announcements
+
+# BSE's AnnGetData API died (~June 2026, returns "No Record Found!" for every
+# window), which froze corporate_announcements at 31-May. This pulls the same
+# feed from NSE instead and writes to the SAME corporate_announcements table
+# (dedup by deterministic news_id), so the website/app feeds stay current.
+# Runs from the cloud — independent of the laptop.
+
+on:
+  schedule:
+    - cron: '0 13 * * 1-5'    # 18:30 IST — after market close
+    - cron: '30 17 * * 1-5'   # 23:00 IST — catches late-evening filings
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'lookback window in days'
+        required: false
+        default: '3'
+
+jobs:
+  announcements:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: NSE announcements -> corporate_announcements
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python nse_corp_announcements_cron.py --days ${{ github.event.inputs.days || '3' }}

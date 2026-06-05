@@ -16,7 +16,11 @@ Usage:
   python nse_corp_announcements_cron.py --dry-run                # fetch + map, no write
 """
 import sys, time, json, uuid, argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# NSE reports filing times in IST. Store them as true UTC so timestamptz + IST
+# display render the correct wall-clock date (else evening filings roll a day forward).
+IST = timezone(timedelta(hours=5, minutes=30))
 import requests
 
 # reuse auth + the proven upsert from the BSE cron (same table, same conflict key)
@@ -131,7 +135,7 @@ def to_row(a: dict, known: set):
         "headline": (desc or detail)[:300],
         "detail": detail[:1000],
         "pdf_url": a.get("attchmntFile") or None,
-        "filed_at": filed.isoformat() if filed else None,
+        "filed_at": filed.replace(tzinfo=IST).astimezone(timezone.utc).isoformat() if filed else None,
         "critical": False,
         "material": nse_is_material(desc, detail),
         "company_name": (a.get("sm_name") or "").strip() or None,

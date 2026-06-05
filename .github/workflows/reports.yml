@@ -1,12 +1,12 @@
-name: Stock Research Reports (PDF)
+name: Stock Research Reports (PDF) — manual only
 
-# Regenerates the downloadable research PDFs into Supabase Storage `reports/`,
-# nightly after the EOD price update so each report shows the day's close + date.
-# Independent of Kite (reads stock_master + fundamentals bundles only).
+# SUPERSEDED by on-demand rendering at Vercel /api/report (TypeScript engine,
+# reportHtml.ts). Reports now generate lazily on first view each day and cache
+# to Supabase Storage `reports/`. This Python/Playwright batch is kept for manual
+# bulk runs only (workflow_dispatch) — its nightly schedule is disabled so it
+# cannot overwrite the on-demand renders.
 
 on:
-  schedule:
-    - cron: '0 13 * * 1-5'   # 18:30 IST — after EOD prices (15:50) settle
   workflow_dispatch:
     inputs:
       symbols:

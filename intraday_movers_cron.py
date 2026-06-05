@@ -56,23 +56,14 @@ def load_stocks(min_mcap):
     return out
 
 
-def _median(xs):
-    s = sorted(xs)
-    n = len(s)
-    if not n:
-        return None
-    m = n // 2
-    return s[m] if n % 2 else (s[m - 1] + s[m]) / 2.0
-
-
 def load_baselines(stocks):
     """Per-symbol volume baselines from daily/{sym}.json, EXCLUDING any bar dated
-    today (today comes from the live quote):
-      med21 = MEDIAN of the last 21 days  -> the 'typical day' baseline for rvol_1d.
-              Median (not a single prior day) so one freak low-volume day can't
-              blow RVOL up (e.g. KAMAHOLD's 94-share 04-Jun day did before).
-      avg5  = mean of last 5 days  -> rvol_1w (recent-week pace).
-      avg21 = mean of last 21 days -> rvol_1m (month pace)."""
+    today (today comes from the live quote). RVOL = today's volume / average daily
+    volume over the last N trading days:
+      d1   = last 1 day  -> rvol_1d (today vs the previous trading day)
+      avg5  = mean of last 5 days  -> rvol_1w (today vs the last week)
+      avg21 = mean of last 21 days -> rvol_1m (today vs the last month)
+    No cap is applied: the real ratio is stored as-is."""
     today = datetime.datetime.now(IST).date()
     base = {}
 
@@ -97,10 +88,10 @@ def load_baselines(stocks):
             vols.append(v); turns.append(v * c)
         if not vols:
             return
-        med21 = _median(vols[-21:])
-        avg5 = sum(vols[-5:]) / len(vols[-5:])
-        avg21 = sum(vols[-21:]) / len(vols[-21:])
-        base[sym] = (med21, avg5, avg21)
+        d1 = vols[-1]                                   # last 1 trading day
+        avg5 = sum(vols[-5:]) / len(vols[-5:])          # last 5 days (week)
+        avg21 = sum(vols[-21:]) / len(vols[-21:])       # last 21 days (month)
+        base[sym] = (d1, avg5, avg21)
 
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         list(ex.map(one, stocks))
@@ -141,8 +132,8 @@ def tick(stocks, baselines):
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
             b = baselines.get(sym)
             if b:
-                med, a5, a21 = b
-                for col, den in (('rvol_1d', med), ('rvol_1w', a5), ('rvol_1m', a21)):
+                d1, a5, a21 = b
+                for col, den in (('rvol_1d', d1), ('rvol_1w', a5), ('rvol_1m', a21)):
                     val = _rvol(vol, den)
                     if val is not None:
                         patch[col] = val

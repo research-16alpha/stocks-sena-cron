@@ -27,7 +27,6 @@ import requests
 from kite_daily_update import kite, sb, PUB  # shared Kite client + Supabase + storage base
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-RVOL_CAP = 50.0
 WORKERS = 24
 
 
@@ -57,9 +56,23 @@ def load_stocks(min_mcap):
     return out
 
 
+def _median(xs):
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return None
+    m = n // 2
+    return s[m] if n % 2 else (s[m - 1] + s[m]) / 2.0
+
+
 def load_baselines(stocks):
-    """Per-symbol prior-day volume baselines (prev, 5d avg, 21d avg) + 21d turnover,
-    from daily/{sym}.json, EXCLUDING any bar dated today (today comes from the live quote)."""
+    """Per-symbol volume baselines from daily/{sym}.json, EXCLUDING any bar dated
+    today (today comes from the live quote):
+      med21 = MEDIAN of the last 21 days  -> the 'typical day' baseline for rvol_1d.
+              Median (not a single prior day) so one freak low-volume day can't
+              blow RVOL up (e.g. KAMAHOLD's 94-share 04-Jun day did before).
+      avg5  = mean of last 5 days  -> rvol_1w (recent-week pace).
+      avg21 = mean of last 21 days -> rvol_1m (month pace)."""
     today = datetime.datetime.now(IST).date()
     base = {}
 
@@ -84,10 +97,10 @@ def load_baselines(stocks):
             vols.append(v); turns.append(v * c)
         if not vols:
             return
-        prev = vols[-1]
+        med21 = _median(vols[-21:])
         avg5 = sum(vols[-5:]) / len(vols[-5:])
         avg21 = sum(vols[-21:]) / len(vols[-21:])
-        base[sym] = (prev, avg5, avg21)
+        base[sym] = (med21, avg5, avg21)
 
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         list(ex.map(one, stocks))
@@ -97,7 +110,7 @@ def load_baselines(stocks):
 def _rvol(vol, den):
     if not den or den <= 0 or not vol or vol <= 0:
         return None
-    return round(min(vol / den, RVOL_CAP), 2)
+    return round(vol / den, 2)  # NO cap: show the real relative volume
 
 
 def tick(stocks, baselines):
@@ -128,8 +141,8 @@ def tick(stocks, baselines):
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
             b = baselines.get(sym)
             if b:
-                pv, a5, a21 = b
-                for col, den in (('rvol_1d', pv), ('rvol_1w', a5), ('rvol_1m', a21)):
+                med, a5, a21 = b
+                for col, den in (('rvol_1d', med), ('rvol_1w', a5), ('rvol_1m', a21)):
                     val = _rvol(vol, den)
                     if val is not None:
                         patch[col] = val

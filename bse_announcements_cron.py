@@ -25,7 +25,11 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# BSE reports filing times in IST. Store as true UTC so timestamptz + IST display
+# render the correct date (else evening filings roll a day forward).
+IST = timezone(timedelta(hours=5, minutes=30))
 import requests
 
 KEY = os.environ.get('SUPABASE_SERVICE_KEY')
@@ -176,7 +180,7 @@ def to_row(ann: dict, scrip_to_symbol: dict):
         'headline': subject[:300],
         'detail': detail[:1000],
         'pdf_url': (BSE_ATTACH + attach) if attach else None,
-        'filed_at': filed_at.isoformat() if filed_at else None,
+        'filed_at': filed_at.replace(tzinfo=IST).astimezone(timezone.utc).isoformat() if filed_at else None,
         'critical': bool(ann.get('CRITICALNEWS')),
         'material': is_material(category, subject + ' ' + detail),
         'company_name': company,

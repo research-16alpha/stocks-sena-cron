@@ -129,6 +129,16 @@ def merge_daily(stock):
         return (sym, 'empty')
     new = [[b['date'].strftime('%Y-%m-%d'), round(b['open'], 4), round(b['high'], 4),
             round(b['low'], 4), round(b['close'], 4), int(b['volume'])] for b in raw]
+    # Kite's historical 'day' bar for the CURRENT session is PARTIAL until close, so
+    # writing it would freeze a mid-session volume into history (the 04-Jun-2026 bug,
+    # where the after-close fix also failed on an expired token). During market hours
+    # drop today's bar; the after-close run writes the complete one.
+    _ist = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+    if (_ist.hour * 60 + _ist.minute) < 935:  # before 15:35 IST (close + buffer)
+        _today = _ist.date().isoformat()
+        new = [b for b in new if b[0] < _today]
+    if not new:
+        return (sym, 'empty')
     try:
         cur = requests.get(f'{PUB}/daily/{sym}.json', headers=STORE_H, timeout=20)
         doc = cur.json() if cur.status_code == 200 else {'interval': '1d'}

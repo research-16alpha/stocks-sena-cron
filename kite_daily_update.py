@@ -139,17 +139,34 @@ def merge_daily(stock):
         new = [b for b in new if b[0] < _today]
     if not new:
         return (sym, 'empty')
-    try:
-        cur = requests.get(f'{PUB}/daily/{sym}.json', headers=STORE_H, timeout=20)
-        doc = cur.json() if cur.status_code == 200 else {'interval': '1d'}
-        old = [b for b in doc.get('bars', []) if b[0] < new[0][0]]      # keep history before the new window
-        bars = old + new
-    except Exception:
-        bars = new
-    doc = {'interval': '1d', 'from': bars[0][0], 'to': bars[-1][0], 'bars': bars,
+    # Read existing history. If the read fails we MUST NOT fall back to `new` alone
+    # (that would truncate years of history to the ~18-day window) — skip the stock
+    # instead and let a later run fix it.
+    doc = None
+    for attempt in range(3):
+        try:
+            cur = requests.get(f'{PUB}/daily/{sym}.json', headers=STORE_H, timeout=30)
+            doc = cur.json() if cur.status_code == 200 else {'interval': '1d', 'bars': []}
+            break
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    if doc is None:
+        return (sym, 'geterr')                                          # could not read history -> skip, do not truncate
+    old = [b for b in doc.get('bars', []) if b[0] < new[0][0]]          # keep history before the new window
+    bars = old + new
+    out = {'interval': '1d', 'from': bars[0][0], 'to': bars[-1][0], 'bars': bars,
            '_ticker_used': f'KITE:{tsym}', 'symbol': sym}
-    requests.put(f'{URL}/storage/v1/object/daily/{sym}.json', headers=STORE_H,
-                 data=json.dumps(doc, separators=(',', ':')), timeout=30)
+    wrote = False
+    for attempt in range(3):
+        try:
+            r = requests.put(f'{URL}/storage/v1/object/daily/{sym}.json', headers=STORE_H,
+                             data=json.dumps(out, separators=(',', ':')), timeout=45)
+            if r.status_code in (200, 201): wrote = True
+            break
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    if not wrote:
+        return (sym, 'puterr')
     # Date-based returns + 52w (shared math). latest_price stays whatever the LTP
     # path set — we take only the returns/52w keys here.
     m = compute_returns(bars) or {}

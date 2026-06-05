@@ -1,0 +1,35 @@
+name: Stock Research Reports (PDF)
+
+# Regenerates the downloadable research PDFs into Supabase Storage `reports/`,
+# nightly after the EOD price update so each report shows the day's close + date.
+# Independent of Kite (reads stock_master + fundamentals bundles only).
+
+on:
+  schedule:
+    - cron: '0 13 * * 1-5'   # 18:30 IST — after EOD prices (15:50) settle
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: 'comma-separated symbols (blank = full non-bank universe)'
+        required: false
+        default: ''
+
+jobs:
+  reports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Playwright + Chromium
+        run: pip install playwright requests && python -m playwright install --with-deps chromium
+      - name: Generate research PDFs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LOGO_PATH: logo.png
+        run: python gen_reports.py ${{ github.event.inputs.symbols }}

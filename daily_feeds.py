@@ -129,8 +129,10 @@ def run_concall():
             continue
         q, pe = CON.infer_quarter(dtv.date())
         att = x.get("attchmntFile")
+        if not (att and att.startswith("http") and att.lower().endswith(".pdf")):
+            continue  # link directly to the transcript PDF only
         by[(sym, q)] = {"symbol": sym, "quarter": q, "period_end": pe, "filed_at": dtv.isoformat(),
-                        "source": "NSE", "source_url": att if (att and att.startswith("http")) else None,
+                        "source": "NSE", "source_url": att,
                         "title": (x.get("desc") or "Earnings call transcript")[:200], "has_text": False}
     # concall_transcripts has a unique (symbol, quarter, source) constraint -> upsert (idempotent).
     rows = list(by.values())

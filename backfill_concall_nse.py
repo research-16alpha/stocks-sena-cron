@@ -114,7 +114,9 @@ def main():
     by_key = {}
     for x in raw:
         sym = (x.get("symbol") or "").strip()
-        text = ((x.get("desc") or "") + " " + (x.get("attchmntText") or "")).strip()
+        # scan desc + attachment text + the attachment FILENAME — many transcripts use the
+        # generic "Analyst Meet/Con. Call" desc and only say "transcript" in the PDF name.
+        text = " ".join(filter(None, (x.get("desc"), x.get("attchmntText"), x.get("attchmntFile")))).strip()
         if not sym or not is_transcript(text):
             continue
         dtv = pdt(x.get("an_dt") or x.get("sort_date"))

@@ -30,6 +30,17 @@ IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 WORKERS = 24
 
 
+def _ltt(q):
+    """Parsed last_trade_time (datetime) from a Kite quote, or None."""
+    lt = q.get('last_trade_time')
+    if isinstance(lt, str):
+        try:
+            return datetime.datetime.strptime(lt[:19], '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return None
+    return lt
+
+
 def market_open(now=None):
     now = now or datetime.datetime.now(IST)
     if now.weekday() >= 5:
@@ -118,6 +129,14 @@ def tick(stocks, baselines):
                     time.sleep(0.6 * (attempt + 1)); continue
                 break
 
+    # Market-open guard (the reliable "is it moving?" check): a live session exists only if at
+    # least one instrument actually traded today. On a weekend/holiday the cron may still fire,
+    # but every quote is from a prior session -> write nothing and never overwrite the real last
+    # close. Once the session is confirmed open we refresh EVERY ticker: an untraded small-cap
+    # simply shows 0% (last_price == prev close) and updates the instant it trades.
+    if not any(_ltt(q) and _ltt(q).date() == today for q in quotes.values()):
+        return 0
+
     payloads = []
     for kid, q in quotes.items():
         sym = id_for.get(kid)
@@ -126,18 +145,10 @@ def tick(stocks, baselines):
         vol = q.get('volume')
         if not (sym and lp and 0 < lp < 1e7):
             continue
-        lt = q.get('last_trade_time')
-        if isinstance(lt, str):
-            try:
-                lt = datetime.datetime.strptime(lt[:19], '%Y-%m-%d %H:%M:%S')
-            except Exception:
-                lt = None
-        if lt and lt.date() != today:
-            continue  # stale quote (holiday / not traded today): never overwrite the real last close
         patch = {'latest_price': round(lp, 2)}
         if prev_close:
             patch['price_change_pct'] = round((lp / prev_close - 1) * 100, 2)
-        if vol:  # truthy only: a 0/None volume must never zero turnover or rvol
+        if vol is not None:
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
             b = baselines.get(sym)
             if b:

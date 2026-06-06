@@ -66,7 +66,7 @@ def main():
         patch = {'latest_price': round(lp, 2)}
         if prev:
             patch['price_change_pct'] = round((lp / prev - 1) * 100, 2)
-        if vol is not None:
+        if vol:  # truthy only: a 0/None volume (off-session quote) must never zero turnover
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
         payloads.append((sym, patch))
 

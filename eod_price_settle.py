@@ -24,6 +24,30 @@ IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 WORKERS = 10
 
 
+def market_traded_today():
+    """Data-driven trading-day guard. Returns True ONLY if the broker's last trade for
+    a liquid benchmark is dated today (IST). This needs no holiday calendar and handles
+    every case correctly: normal weekends, mid-week holidays (the cron still fires but
+    we skip), and rare special Saturday/Sunday sessions (we act because trades happened).
+    On any non-trading day last_trade_time is a prior session, so we skip and never
+    overwrite the last real close."""
+    today = datetime.datetime.now(IST).date()
+    try:
+        q = kite.quote(['NSE:RELIANCE', 'NSE:HDFCBANK', 'NSE:INFY'])
+    except Exception:
+        return False
+    for v in q.values():
+        lt = v.get('last_trade_time')
+        if isinstance(lt, str):
+            try:
+                lt = datetime.datetime.strptime(lt[:19], '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                lt = None
+        if lt and lt.date() == today:
+            return True
+    return False
+
+
 def load_stocks():
     out, off = [], 0
     while True:
@@ -39,6 +63,9 @@ def load_stocks():
 
 
 def main():
+    if not market_traded_today():
+        print(f'[eod-settle] market did not trade today ({datetime.datetime.now(IST):%Y-%m-%d}); skipping (no holiday calendar needed).', flush=True)
+        return
     stocks = load_stocks()
     print(f'[eod-settle] {len(stocks)} active tickers with a kite_token', flush=True)
     id_for = {f"{s['kite_exchange']}:{s['kite_tradingsymbol']}": s['symbol'] for s in stocks}

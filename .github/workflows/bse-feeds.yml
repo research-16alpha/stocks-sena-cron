@@ -1,0 +1,34 @@
+name: BSE Feeds (announcements + concalls, our own)
+
+# Unified BSE corporate-filing scraper via the LIVE AnnSubCategoryGetData endpoint (the
+# AnnGetData announcements API died Jun-2026; this paginated variant works). ONE broad
+# scrape routes to:
+#   corporate_announcements : ALL filings for BSE-ONLY companies (NSE covers dual-listed;
+#                             BSE-only had zero feed coverage)
+#   concall_transcripts     : "Earnings Call Transcript" filings, gap-filled vs NSE
+# --days 2 each run (idempotent upserts). BSE does not block GitHub Actions IPs.
+
+on:
+  schedule:
+    - cron: '30 14 * * *'   # 20:00 IST - after the day's filings
+    - cron: '0 4 * * *'     # 09:30 IST - overnight catch-up
+  workflow_dispatch:
+
+jobs:
+  bse-feeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Scrape BSE feeds (announcements + concalls)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python bse_feeds.py --days 2

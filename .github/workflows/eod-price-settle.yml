@@ -6,11 +6,14 @@ name: EOD Price Settle (broker close -> stock_master)
 # traded_value_cr for every active ticker with the broker's final close (one batched Kite
 # quote). It does NOT touch the RVOL ratios (those come from the live loop's baseline).
 #
+# Runs EVERY day on purpose: the script's own data-driven guard (market_traded_today)
+# decides whether to act, so weekends/mid-week holidays are safe no-ops and a rare
+# special Saturday/Sunday session is still caught. No holiday calendar to maintain.
 # Requires the daily Kite token in app_config (read via the service key).
 
 on:
   schedule:
-    - cron: '45 10 * * 1-5'   # 10:45 UTC = 16:15 IST, after the 15:40-16:00 closing session
+    - cron: '45 10 * * *'   # 10:45 UTC = 16:15 IST daily, after the 15:40-16:00 closing session
   workflow_dispatch:
 
 jobs:

@@ -121,7 +121,7 @@ def run_concall():
     by = {}
     for x in raw:
         sym = (x.get("symbol") or "").strip()
-        text = ((x.get("desc") or "") + " " + (x.get("attchmntText") or "")).strip()
+        text = " ".join(filter(None, (x.get("desc"), x.get("attchmntText"), x.get("attchmntFile")))).strip()
         if not sym or not CON.is_transcript(text):
             continue
         dtv = CON.pdt(x.get("an_dt") or x.get("sort_date"))

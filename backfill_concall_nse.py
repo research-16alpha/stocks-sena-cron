@@ -22,9 +22,12 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 PAGE = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
 API = "https://www.nseindia.com/api/corporate-announcements?index=equities&from_date={f}&to_date={t}"
 
-# Real transcripts say "transcript". Exclude pre-call intimations / audio links.
-EXCLUDE = ("intimation", "schedule of", "notice of", "will be held", "audio recording",
-           "audio clip", "recording of", "prior intimation", "newspaper", "link for the", "link of")
+# Real transcripts say "transcript". Exclude ONLY pre-call intimations / notices.
+# Do NOT exclude "audio recording"/"recording of": companies routinely file the transcript
+# as a single "Audio recording AND transcript of the earnings call" PDF, and a pure audio
+# filing (no "transcript" in the text) is already dropped by the "transcript" check below.
+EXCLUDE = ("intimation", "schedule of", "notice of", "will be held",
+           "prior intimation", "newspaper", "link for the", "link of")
 
 
 def new_session():
@@ -119,10 +122,13 @@ def main():
             continue
         q, pe = infer_quarter(dtv.date())
         att = x.get("attchmntFile")
+        # Link DIRECTLY to the transcript PDF only — skip any filing without a PDF attachment.
+        if not (att and att.startswith("http") and att.lower().endswith(".pdf")):
+            continue
         row = {
             "symbol": sym, "quarter": q, "period_end": pe,
             "filed_at": dtv.isoformat(), "source": "NSE",
-            "source_url": att if (att and att.startswith("http")) else None,
+            "source_url": att,
             "title": (x.get("desc") or "Earnings call transcript")[:200],
             "has_text": False,
         }

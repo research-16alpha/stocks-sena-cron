@@ -105,6 +105,7 @@ def _rvol(vol, den):
 
 
 def tick(stocks, baselines):
+    today = datetime.datetime.now(IST).date()
     id_for = {f"{s['kite_exchange']}:{s['kite_tradingsymbol']}": s['symbol'] for s in stocks}
     ids = list(id_for)
     quotes = {}
@@ -125,10 +126,18 @@ def tick(stocks, baselines):
         vol = q.get('volume')
         if not (sym and lp and 0 < lp < 1e7):
             continue
+        lt = q.get('last_trade_time')
+        if isinstance(lt, str):
+            try:
+                lt = datetime.datetime.strptime(lt[:19], '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                lt = None
+        if lt and lt.date() != today:
+            continue  # stale quote (holiday / not traded today): never overwrite the real last close
         patch = {'latest_price': round(lp, 2)}
         if prev_close:
             patch['price_change_pct'] = round((lp / prev_close - 1) * 100, 2)
-        if vol is not None:
+        if vol:  # truthy only: a 0/None volume must never zero turnover or rvol
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
             b = baselines.get(sym)
             if b:

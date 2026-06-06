@@ -154,20 +154,27 @@ def ttm_flows(d):
         'pbt': s('pbt', 'pbt_ordinary'),
         'finance_costs': s('finance_costs', 'interest'),
         'operating_profit': s('operating_profit'),
+        'ebitda': s('ebitda'),
         'depreciation': s('depreciation'),
         'period': last4[-1]['period'],
         'periods': [r['period'] for r in last4],
     }
 
 
-def compute(d, use_ttm=False):
+def compute(d, use_ttm=False, live_price=None):
     """Return (metrics_dict, snapshot_patch_dict).
 
     use_ttm: when True and 4 clean recent quarters exist, ROE/ROCE/EV-EBITDA use
     trailing-twelve-month flows (net profit, PBT, finance costs, operating profit)
     instead of the latest full-year P&L — so the ratios track the latest quarter.
     Balance-sheet inputs (equity, borrowings) stay annual either way. Falls back to
-    annual per-field when a quarter lacks the tag, and entirely when <4 quarters."""
+    annual per-field when a quarter lacks the tag, and entirely when <4 quarters.
+
+    live_price: the LIVE broker (Kite) price from stock_master.latest_price. When
+    given it is the single source of truth for every price-derived ratio (market_cap,
+    pb, pe, ev_ebitda) — the bundle snapshot price is Yahoo-seeded and goes stale
+    (e.g. a price that moved 18% on the day shows last week's mcap). A live price is
+    fresh by definition, so it also satisfies the freshness gate."""
     bank = is_bank_bundle(d)
     # Prefer the merged alias (consolidated-preferred PER PERIOD, kept fresh by the
     # parser + bse_annual_cron). A basis-specific array can be stale relative to the
@@ -179,7 +186,7 @@ def compute(d, use_ttm=False):
     bs_series = series(d, 'annual_bs', 'annual_bs_consolidated', 'annual_bs_standalone')
     cf = latest(d, 'annual_cf', 'annual_cf_consolidated', 'annual_cf_standalone')
     snap = (d.get('snapshot') or [{}])[0] if isinstance(d.get('snapshot'), list) and d.get('snapshot') else (d.get('snapshot') or {})
-    price = g(snap, 'current_price', 'price')
+    price = live_price if live_price is not None else g(snap, 'current_price', 'price')
     face = g(snap, 'face_value') or 10.0
 
     # H9: a price is only valid for VALUATION ratios (pb / ev_ebitda / market_cap)
@@ -190,18 +197,30 @@ def compute(d, use_ttm=False):
     # price and still compute. val_price=None disables only the price-derived set.
     _fd = snap.get('fetched_date') or snap.get('fetched_at') or snap.get('date')
     _latest_ann = (pl or {}).get('period')
-    price_fresh = False
-    if _fd:
-        try:
-            from datetime import date as _date
-            price_fresh = (_date.today() - _date.fromisoformat(str(_fd)[:10])).days <= 7
-        except Exception:
-            price_fresh = False
+    if live_price is not None:
+        price_fresh = True       # live Kite price (stock_master.latest_price) is fresh by definition
+    else:
+        price_fresh = False
+        if _fd:
+            try:
+                from datetime import date as _date
+                price_fresh = (_date.today() - _date.fromisoformat(str(_fd)[:10])).days <= 7
+            except Exception:
+                price_fresh = False
     ann_fresh = bool(_latest_ann and str(_latest_ann)[:10] >= '2024-03-31')
     val_price = price if (price_fresh and ann_fresh) else None
 
     total_equity = pick_equity(bs)
     equity_capital = g(bs, 'equity_capital')
+
+    # Fresh market cap from the LIVE price — the single source of truth for every
+    # price-derived ratio below (ev_ebitda, market_cap_cr, pe). equity_capital/face =
+    # shares outstanding, so this auto-tracks rights/bonus/splits from the filings.
+    mcap_fresh = None
+    if equity_capital and face and val_price:
+        _mc = round(equity_capital * val_price / face, 2)
+        if 1 < _mc < 2_000_000:
+            mcap_fresh = _mc
 
     def _borrowings_of(_bs):
         b = g(_bs, 'borrowings')
@@ -291,9 +310,13 @@ def compute(d, use_ttm=False):
             de = sane(round(borrowings / total_equity, 2), 0, 50)
             if de is not None:
                 m['debt_equity'] = de
-        # EV/EBITDA — only when the price (hence mcap) is fresh over fresh fundamentals (H9)
-        ebitda = (op + dep) if (op is not None and dep is not None) else None
-        mcap = g(snap, 'market_cap_cr') if val_price else None
+        # EV/EBITDA — only when the price (hence mcap) is fresh over fresh fundamentals (H9).
+        # Prefer the filing's own EBITDA tag (our `operating_profit` IS EBITDA, so the old
+        # op+dep double-counted depreciation); fall back to op+dep only when no tag exists.
+        ebitda = (ttm.get('ebitda') if ttm else None) or g(pl, 'ebitda')
+        if ebitda is None and op is not None and dep is not None:
+            ebitda = op + dep
+        mcap = mcap_fresh
         if (ebitda and ebitda > 0 and mcap and 1 < mcap < 2_000_000 and borrowings is not None):
             ev = mcap + borrowings - cash
             evb = sane(round(ev / ebitda, 2), 0, 200)
@@ -338,12 +361,11 @@ def compute(d, use_ttm=False):
         m['latest_quarter_period'] = qr[-1].get('period')
         m['quarters_count'] = len(qr)   # N2: recompute in lockstep so it can't drift
 
-    # market cap recompute — only from a fresh price (H9; avoids reviving a stale
-    # mcap for illiquid/delisted names whose Yahoo quote is frozen)
-    if equity_capital and face and val_price:
-        mc = round(equity_capital * val_price / face, 2)
-        if 1 < mc < 2_000_000:
-            m['market_cap_cr'] = mc
+    # market cap — the fresh live-price figure computed once above (H9 gate already
+    # applied via val_price). Also mirrored into the snapshot so the bundle agrees.
+    if mcap_fresh:
+        m['market_cap_cr'] = mcap_fresh
+        snap_patch['market_cap_cr'] = mcap_fresh
 
     # P/E = market cap / net-profit-TTM (split-immune; net profit, unlike summing per-share
     # EPS, is unaffected by stock splits). Recomputed here daily with the fresh price so it
@@ -413,10 +435,40 @@ def download_bundle(sym):
     return r.json() if r.status_code == 200 else None
 
 
-SM_COLS = ['roe_pct', 'roce_pct', 'debt_equity', 'pb_ratio', 'ev_ebitda', 'rev_5y_cagr',
+def fetch_live_prices():
+    """All active symbols' live broker (Kite) price from stock_master.latest_price —
+    the authoritative current price for valuation ratios (NOT the stale Yahoo bundle
+    snapshot). One bulk prefetch; mapped symbol -> float."""
+    out, off = {}, 0
+    while True:
+        r = requests.get(f'{URL}/rest/v1/stock_master?select=symbol,latest_price'
+                         f'&latest_price=not.is.null&limit=1000&offset={off}', headers=HEADERS, timeout=30)
+        b = r.json() or []
+        for row in b:
+            v = num(row.get('latest_price'))
+            if v is not None:
+                out[row['symbol']] = v
+        if len(b) < 1000:
+            break
+        off += 1000
+    return out
+
+
+def fetch_one_live_price(sym):
+    import urllib.parse
+    r = requests.get(f"{URL}/rest/v1/stock_master?select=latest_price&symbol=eq.{urllib.parse.quote(sym)}",
+                     headers=HEADERS, timeout=20)
+    b = r.json() or []
+    return num(b[0]['latest_price']) if b else None
+
+
+SM_COLS = ['roe_pct', 'roce_pct', 'debt_equity', 'pb_ratio', 'pe_ratio', 'ev_ebitda', 'rev_5y_cagr',
            'profit_5y_cagr', 'piotroski_score', 'promoter_pct', 'fii_pct', 'dii_pct',
            'pledged_pct', 'latest_annual_period', 'latest_quarter_period', 'market_cap_cr',
            'quarters_count', 'pl_years_count']  # N2: keep counts in sync with periods
+# pe_ratio was historically NOT written here, so stock_master.pe_ratio went stale (computed
+# off whatever set it once). It's recomputed in compute() as market_cap/net_profit with the
+# live price, so it belongs in the patched set.
 
 
 def patch_stock_master(sym, m):
@@ -431,15 +483,16 @@ def patch_stock_master(sym, m):
     return r.status_code in (200, 204)
 
 
-def process(sym, dry, use_ttm=False):
+def process(sym, dry, use_ttm=False, live_price=None):
     d = download_bundle(sym)
     if not d:
         return (sym, 'NO_BUNDLE', 0)
     raw = json.dumps(d, default=str, separators=(',', ':')).encode('utf-8')
-    m, snap_patch = compute(d, use_ttm=use_ttm)
+    m, snap_patch = compute(d, use_ttm=use_ttm, live_price=live_price)
     if not m and not snap_patch:
         return (sym, 'NO_METRICS', 0)
     ttm = (m.get('_basis') == 'ttm')
+    live = live_price is not None
 
     # Fill-don't-overwrite: only set a snapshot field if the existing value is
     # missing or broken. Preserve sane existing (Screener) values — EXCEPT when a
@@ -451,9 +504,9 @@ def process(sym, dry, use_ttm=False):
     def should_set(field, existing):
         if field == 'metrics_basis':
             return True                                        # always reflect this run's basis
-        if ttm and field in ('roe', 'roce', 'pb', 'book_value'):
-            return True   # TTM = authoritative recompute from primary annual; the
-                          # roe/roce/pb/book_value set refreshes together (sanity-gated)
+        if (ttm or live) and field in ('roe', 'roce', 'pb', 'book_value', 'pe', 'market_cap_cr'):
+            return True   # TTM/live = authoritative recompute; the price-derived set
+                          # (pb/pe/market_cap) + roe/roce/book_value refresh together
         if field == 'book_value':
             return existing in (None, 0, 0.0)                 # 0 = broken
         if field == 'pb':
@@ -515,9 +568,10 @@ def main():
             d = download_bundle(sym)
             if not d:
                 print(f'{sym}: NO BUNDLE'); continue
-            m, sp = compute(d)
+            lp = fetch_one_live_price(sym)
+            m, sp = compute(d, live_price=lp)
             snap = (d.get('snapshot') or [{}])[0] if isinstance(d.get('snapshot'), list) and d.get('snapshot') else {}
-            print(f'\n=== {sym} (bank={is_bank_bundle(d)}) ===')
+            print(f'\n=== {sym} (bank={is_bank_bundle(d)})  live_price={lp} ===')
             print(f'  book_value : computed {sp.get("book_value")}   existing {snap.get("book_value")}')
             print(f'  roe        : computed {sp.get("roe")}   existing {snap.get("roe")}')
             print(f'  roce       : computed {sp.get("roce")}   existing {snap.get("roce")}')
@@ -545,12 +599,15 @@ def main():
     if not args.dry_run and not ensure_backup_bucket():
         print('[ERR] backup bucket', file=sys.stderr); sys.exit(1)
 
+    live_prices = fetch_live_prices()
+    print(f'[INFO] live Kite prices for {len(live_prices)} symbols (from stock_master.latest_price)')
+
     ok = nm = nb = err = fields = 0
     t0 = time.time()
 
     def safe(s):
         try:
-            return process(s, args.dry_run, use_ttm=args.ttm)
+            return process(s, args.dry_run, use_ttm=args.ttm, live_price=live_prices.get(s))
         except Exception as e:
             return (s, f'EXC:{e}', 0)
 

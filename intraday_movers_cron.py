@@ -41,12 +41,23 @@ def _ltt(q):
     return lt
 
 
-def market_open(now=None):
-    now = now or datetime.datetime.now(IST)
-    if now.weekday() >= 5:
+def market_traded_today():
+    """Data-driven trading-day guard: True only if a liquid mega-cap's last trade is dated today
+    (IST). Handles weekends, mid-week holidays AND rare special Saturday sessions with no calendar."""
+    today = datetime.datetime.now(IST).date()
+    try:
+        q = kite.quote(['NSE:RELIANCE', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:TCS', 'NSE:ICICIBANK'])
+    except Exception:
         return False
+    return any(_ltt(v) and _ltt(v).date() == today for v in q.values())
+
+
+def market_open(now=None):
+    # Time window only (09:15-15:30 IST). The trading-DAY decision (holidays + rare special
+    # Saturday sessions) is the data guard market_traded_today(), NOT the calendar/weekday.
+    now = now or datetime.datetime.now(IST)
     m = now.hour * 60 + now.minute
-    return 555 <= m <= 930  # 09:15 - 15:30 IST
+    return 555 <= m <= 930
 
 
 def load_stocks(min_mcap):
@@ -178,6 +189,13 @@ def main():
     ap.add_argument('--max-minutes', dest='max_minutes', type=int, default=210, help='safety cap per run')
     ap.add_argument('--min-mcap', dest='min_mcap', type=float, default=50, help='only refresh stocks >= this mcap (₹ Cr); 0=all')
     args = ap.parse_args()
+
+    # Trading-day gate (loop mode): the cron fires every day, but we only enter the live loop if
+    # the market actually traded today. Normal Sat/Sun and mid-week holidays exit here in seconds
+    # (no token / no trade -> False); a real session (incl. a rare special Saturday/Sunday) runs.
+    if args.loop and not market_traded_today():
+        print(f'[intraday] not a trading session today ({datetime.datetime.now(IST):%Y-%m-%d}); exiting without looping.', flush=True)
+        return
 
     stocks = load_stocks(args.min_mcap)
     print(f'[intraday] {len(stocks)} stocks (min_mcap={args.min_mcap}); computing baselines...', flush=True)

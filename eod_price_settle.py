@@ -82,6 +82,7 @@ def main():
                 print(f'  quote batch {i} err: {str(e)[:60]}', flush=True); break
     print(f'[eod-settle] quotes for {len(quotes)} instruments', flush=True)
 
+    today = datetime.datetime.now(IST).date()
     payloads = []
     for kid, q in quotes.items():
         sym = id_for.get(kid)
@@ -90,6 +91,14 @@ def main():
         vol = q.get('volume')
         if not (sym and lp and 0 < lp < 1e7):
             continue
+        lt = q.get('last_trade_time')
+        if isinstance(lt, str):
+            try:
+                lt = datetime.datetime.strptime(lt[:19], '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                lt = None
+        if lt and lt.date() != today:
+            continue  # didn't trade today (illiquid): keep its real last close, don't write a stale change
         patch = {'latest_price': round(lp, 2)}
         if prev:
             patch['price_change_pct'] = round((lp / prev - 1) * 100, 2)

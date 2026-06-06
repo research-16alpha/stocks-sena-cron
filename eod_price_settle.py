@@ -33,7 +33,7 @@ def market_traded_today():
     overwrite the last real close."""
     today = datetime.datetime.now(IST).date()
     try:
-        q = kite.quote(['NSE:RELIANCE', 'NSE:HDFCBANK', 'NSE:INFY'])
+        q = kite.quote(['NSE:RELIANCE', 'NSE:HDFCBANK', 'NSE:INFY', 'NSE:TCS', 'NSE:ICICIBANK'])
     except Exception:
         return False
     for v in q.values():
@@ -82,7 +82,10 @@ def main():
                 print(f'  quote batch {i} err: {str(e)[:60]}', flush=True); break
     print(f'[eod-settle] quotes for {len(quotes)} instruments', flush=True)
 
-    today = datetime.datetime.now(IST).date()
+    # The market_traded_today() gate above already guarantees a real trading session, so we
+    # settle EVERY ticker: one that traded today gets its close + change + full-day turnover; one
+    # that did not gets 0% / 0 turnover (last_price == prev close), so it drops out of the movers
+    # correctly instead of being left stale.
     payloads = []
     for kid, q in quotes.items():
         sym = id_for.get(kid)
@@ -91,18 +94,10 @@ def main():
         vol = q.get('volume')
         if not (sym and lp and 0 < lp < 1e7):
             continue
-        lt = q.get('last_trade_time')
-        if isinstance(lt, str):
-            try:
-                lt = datetime.datetime.strptime(lt[:19], '%Y-%m-%d %H:%M:%S')
-            except Exception:
-                lt = None
-        if lt and lt.date() != today:
-            continue  # didn't trade today (illiquid): keep its real last close, don't write a stale change
         patch = {'latest_price': round(lp, 2)}
         if prev:
             patch['price_change_pct'] = round((lp / prev - 1) * 100, 2)
-        if vol:  # truthy only: a 0/None volume (off-session quote) must never zero turnover
+        if vol is not None:
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
         payloads.append((sym, patch))
 

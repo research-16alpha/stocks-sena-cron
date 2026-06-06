@@ -1,0 +1,33 @@
+name: EOD Price Settle (broker close -> stock_master)
+
+# After the close, the live movers loop's last tick is a mid-session snapshot, not the
+# settled close, so volatile movers can be off by a percent or two. This runs ONCE after
+# the close + closing session and overwrites latest_price / price_change_pct /
+# traded_value_cr for every active ticker with the broker's final close (one batched Kite
+# quote). It does NOT touch the RVOL ratios (those come from the live loop's baseline).
+#
+# Requires the daily Kite token in app_config (read via the service key).
+
+on:
+  schedule:
+    - cron: '45 10 * * 1-5'   # 10:45 UTC = 16:15 IST, after the 15:40-16:00 closing session
+  workflow_dispatch:
+
+jobs:
+  settle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Settle prices to broker close
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python eod_price_settle.py

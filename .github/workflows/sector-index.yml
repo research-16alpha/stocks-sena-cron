@@ -1,0 +1,31 @@
+name: Sector Index (our own, cap-weighted)
+
+# Recomputes our market-cap-weighted sector index LEVEL series from constituents' daily
+# closes and writes one JSON per sector to the public `daily` bucket (sector/{slug}.json
+# + a combined sector/_sparks.json). Powers the /sectors charts + home sparklines. No
+# exchange index data is used. Runs after the daily price/metrics crons so the mcap
+# weights and daily closes are fresh.
+
+on:
+  schedule:
+    - cron: '30 14 * * *'   # 14:30 UTC = 20:00 IST, after compute-metrics (13:00) + daily OHLCV
+  workflow_dispatch:
+
+jobs:
+  sector-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Build sector indices
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python sector_index_cron.py

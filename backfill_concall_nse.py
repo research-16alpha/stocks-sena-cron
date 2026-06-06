@@ -77,13 +77,15 @@ def infer_quarter(d):
     return f"{q}FY{str(fy)[2:]}", pe.isoformat()
 
 
-def is_transcript(desc_text, fname=""):
-    # Detect "transcript" anywhere (desc + attachment text + the PDF filename), but judge the
-    # pre-call intimation/notice EXCLUDEs on the human DESCRIPTION only — many real transcripts
-    # carry SEBI "intimation of submission" boilerplate in the filename, which must not exclude.
-    if "transcript" not in (desc_text + " " + (fname or "")).lower():
+def is_transcript(desc, atxt="", fname=""):
+    # Detect "transcript" across desc + attachment text + the PDF filename, but judge the
+    # pre-call intimation/notice EXCLUDEs on the DESCRIPTION only. The attachment text + filename
+    # routinely carry SEBI Reg-30 "intimation of submission" boilerplate that must NOT exclude a
+    # real transcript (e.g. RELIANCE files "...Audioandtranscript.pdf" under a generic "Analyst
+    # Meet/Con. Call" desc, with "intimation" language in the attachment text).
+    if "transcript" not in (desc + " " + (atxt or "") + " " + (fname or "")).lower():
         return False
-    return not any(x in desc_text.lower() for x in EXCLUDE)
+    return not any(x in (desc or "").lower() for x in EXCLUDE)
 
 
 def windows(years):
@@ -116,8 +118,7 @@ def main():
     by_key = {}
     for x in raw:
         sym = (x.get("symbol") or "").strip()
-        desc_text = " ".join(filter(None, (x.get("desc"), x.get("attchmntText")))).strip()
-        if not sym or not is_transcript(desc_text, x.get("attchmntFile") or ""):
+        if not sym or not is_transcript(x.get("desc") or "", x.get("attchmntText") or "", x.get("attchmntFile") or ""):
             continue
         dtv = pdt(x.get("an_dt") or x.get("sort_date"))
         if not dtv:

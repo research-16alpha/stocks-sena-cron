@@ -1,0 +1,52 @@
+name: New-Listing Onboard (discover + onboard IPOs)
+
+# Makes new IPOs flow in automatically:
+#   1. refresh_listing_master.py  — re-pull NSE EQUITY_L + BSE ListofScripData (discovery)
+#   2. add_missing_listed.py      — diff vs stock_master, resolve Kite identity, insert new rows
+#   3. sector_backfill.py         — classify the new stocks (normalized to the 22 canonical sectors)
+# Price / fundamentals / shareholding then fill in via the existing daily crons.
+#
+# Step 1 always writes (idempotent upsert, never deletes). Steps 2-3 only COMMIT on the
+# weekly schedule or a manual run with apply=true; a plain manual run is a DRY-RUN that just
+# reports which symbols it WOULD onboard.
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'   # Monday 10:30 IST, weekly
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'apply (commit the onboard). Leave false for a dry-run.'
+        type: boolean
+        default: false
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 1 - Refresh listing universe (NSE + BSE)
+        run: python refresh_listing_master.py
+
+      - name: 2 - Onboard new listings (dry unless scheduled / apply)
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.apply }}" = "true" ]; then
+            echo "::notice::COMMIT mode"; python add_missing_listed.py --commit
+          else
+            echo "::notice::DRY-RUN mode (no writes)"; python add_missing_listed.py
+          fi
+
+      - name: 3 - Classify sectors for new stocks (canonical)
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.apply == 'true' }}
+        run: python sector_backfill.py

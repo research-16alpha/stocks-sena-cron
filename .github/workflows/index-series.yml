@@ -1,0 +1,26 @@
+name: Index Series (NIFTY / BANKNIFTY / SENSEX daily candles from Kite)
+
+# Keeps daily/index/<SLUG>.json fresh — the single source for the market strip + investor-perf
+# (so nothing fetches NIFTY live from Yahoo). Reads the daily-rotated Kite token from app_config.
+# Stdlib-only; runs after the close once the day's token is in the vault.
+
+on:
+  schedule:
+    - cron: '50 10 * * 1-5'   # 16:20 IST (after eod-price-settle)
+  workflow_dispatch:
+
+jobs:
+  index-series:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Store index daily series from Kite
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python index_series_cron.py

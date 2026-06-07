@@ -97,13 +97,29 @@ def nifty_yahoo():
     return d, c
 
 
+def nifty_stored():
+    """Our own Kite-sourced NIFTY series at daily/index/NIFTY.json (PRIMARY - no live call, one source of truth)."""
+    try:
+        j = http_json(f"{SB_URL}/storage/v1/object/public/daily/index/NIFTY.json")
+        bars = j.get("bars") or []
+        d = [str(b[0])[:10] for b in bars]
+        c = [float(b[4]) for b in bars]
+        return (d, c) if len(d) > 50 else None
+    except Exception:
+        return None
+
+
 def nifty_series():
-    """Kite first (broker, single-source); fall back to Yahoo only if the daily token is missing/expired."""
+    """Read our stored Kite series first; live Kite if the store is missing; Yahoo only as last resort."""
+    s = nifty_stored()
+    if s:
+        print("[perf] NIFTY <- daily/index/NIFTY.json (our Kite store)", flush=True)
+        return s
     k = nifty_kite()
     if k:
-        print("[perf] NIFTY <- Kite (primary)", flush=True)
+        print("[perf] NIFTY <- Kite live (store missing)", flush=True)
         return k
-    print("[perf] NIFTY <- Yahoo (fallback; Kite token unavailable)", flush=True)
+    print("[perf] NIFTY <- Yahoo (last resort)", flush=True)
     return nifty_yahoo()
 
 

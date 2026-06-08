@@ -169,12 +169,21 @@ def tick(stocks, baselines):
             # session (the daily cloud --loop); compute_metrics re-anchors the base each EOD.
             f = lp / prev_close
             if 0.5 < f < 1.5:
+                # Bound to the SAME sane ranges compute_metrics enforces, so the live value
+                # never drifts past its EOD cap (mcap < 25 lakh cr, pe/pb in 0..5000). Out of
+                # range -> leave the prior value rather than write an out-of-band number.
                 if s.get('market_cap_cr'):
-                    patch['market_cap_cr'] = round(s['market_cap_cr'] * f, 2)
+                    mc = round(s['market_cap_cr'] * f, 2)
+                    if 0 < mc < 2_500_000:
+                        patch['market_cap_cr'] = mc
                 if s.get('pe_ratio'):
-                    patch['pe_ratio'] = round(s['pe_ratio'] * f, 2)
+                    pe = round(s['pe_ratio'] * f, 2)
+                    if 0 < pe < 5000:
+                        patch['pe_ratio'] = pe
                 if s.get('pb_ratio'):
-                    patch['pb_ratio'] = round(s['pb_ratio'] * f, 2)
+                    pb = round(s['pb_ratio'] * f, 2)
+                    if 0 < pb < 5000:
+                        patch['pb_ratio'] = pb
         if vol is not None:
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
             b = baselines.get(sym)

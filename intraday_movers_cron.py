@@ -66,7 +66,7 @@ def load_stocks(min_mcap):
     out, off = [], 0
     while True:
         q = sb.table('stock_master').select(
-            'symbol,kite_tradingsymbol,kite_exchange,market_cap_cr'
+            'symbol,kite_tradingsymbol,kite_exchange,market_cap_cr,pe_ratio,pb_ratio'
         ).eq('is_active', True).not_.is_('kite_token', 'null')
         if min_mcap > 0:
             q = q.gte('market_cap_cr', min_mcap)
@@ -128,7 +128,7 @@ def _rvol(vol, den):
 
 def tick(stocks, baselines):
     today = datetime.datetime.now(IST).date()
-    id_for = {f"{s['kite_exchange']}:{s['kite_tradingsymbol']}": s['symbol'] for s in stocks}
+    id_for = {f"{s['kite_exchange']}:{s['kite_tradingsymbol']}": s for s in stocks}
     ids = list(id_for)
     quotes = {}
     for i in range(0, len(ids), 500):
@@ -150,7 +150,10 @@ def tick(stocks, baselines):
 
     payloads = []
     for kid, q in quotes.items():
-        sym = id_for.get(kid)
+        s = id_for.get(kid)
+        if not s:
+            continue
+        sym = s['symbol']
         lp = q.get('last_price')
         prev_close = (q.get('ohlc') or {}).get('close')
         vol = q.get('volume')
@@ -159,6 +162,19 @@ def tick(stocks, baselines):
         patch = {'latest_price': round(lp, 2)}
         if prev_close:
             patch['price_change_pct'] = round((lp / prev_close - 1) * 100, 2)
+            # Live valuation: market_cap / pe / pb are LINEAR in price (mcap = shares*price,
+            # pe = mcap/profit, pb = price/bvps). compute_metrics computed the stored values at
+            # the prev close, so scaling them by lp/prev_close reproduces that exact formula on
+            # the live price. Bounded factor guards a bad quote. Assumes ONE live-scaler per
+            # session (the daily cloud --loop); compute_metrics re-anchors the base each EOD.
+            f = lp / prev_close
+            if 0.5 < f < 1.5:
+                if s.get('market_cap_cr'):
+                    patch['market_cap_cr'] = round(s['market_cap_cr'] * f, 2)
+                if s.get('pe_ratio'):
+                    patch['pe_ratio'] = round(s['pe_ratio'] * f, 2)
+                if s.get('pb_ratio'):
+                    patch['pb_ratio'] = round(s['pb_ratio'] * f, 2)
         if vol is not None:
             patch['traded_value_cr'] = round(vol * lp / 1e7, 2)
             b = baselines.get(sym)
@@ -196,6 +212,15 @@ def main():
     if args.loop and not market_traded_today():
         print(f'[intraday] not a trading session today ({datetime.datetime.now(IST):%Y-%m-%d}); exiting without looping.', flush=True)
         return
+
+    # Self-heal frozen Kite identifiers (e.g. NSE T2T names needing a -BE suffix) once at
+    # startup, BEFORE loading the universe, so corrected ids are quoted this session and never
+    # silently freeze the movers board. Reuses our existing Kite client (no re-auth).
+    try:
+        from fix_frozen_kite_ids import heal
+        heal(kite=kite)
+    except Exception as e:
+        print('[heal] skipped:', str(e)[:120], flush=True)
 
     stocks = load_stocks(args.min_mcap)
     print(f'[intraday] {len(stocks)} stocks (min_mcap={args.min_mcap}); computing baselines...', flush=True)

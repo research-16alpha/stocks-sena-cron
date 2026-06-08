@@ -73,7 +73,11 @@ def fetch_annual_rows(scrip, flagdurs):
     by_q = {}
     for row in rows:
         qc = (row.get('quarter_code') or '')
-        if not qc.startswith('M'):          # M = March year-end (annual audited)
+        # Select CUMULATIVE (12-month audited annual) rows: quarter_code[1]=='C' -> MC/DC/JC/SC
+        # for March/December/June/September year-ends. The old startswith('M') filter grabbed the
+        # MARCH QUARTER (MQ) for December-fiscal filers (Nestle, ACC, Ambuja, ABB, CRISIL, VBL...),
+        # storing one quarter as the full year. '*C'=Cumulative(annual), '*Q'=Quarter.
+        if len(qc) < 2 or qc[1] != 'C':
             continue
         ex = by_q.get(qc)
         if not ex or (not ex.get('Consol_XMLName') and row.get('Consol_XMLName')):

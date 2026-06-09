@@ -12,8 +12,15 @@ name: Intraday Live Movers (Kite quotes -> stock_master)
 
 on:
   schedule:
-    - cron: '50 3 * * *'   # 03:50 UTC = 09:20 IST -> loops through the morning
-    - cron: '0 7 * * *'    # 07:00 UTC = 12:30 IST -> loops through to the close
+    # GitHub Actions silently delays/drops scheduled runs (worst on the hour and at round
+    # minutes) — the lone 03:50 slot was not firing, so morning movers stayed frozen on the
+    # prior day. Redundant off-peak morning slots so at least one fires near the open; the
+    # concurrency block below + cancel-in-progress keep only one loop alive (a later trigger
+    # just restarts it), so there is no pile-up of overlapping 3-hour jobs.
+    - cron: '42 3 * * 1-5'   # 03:42 UTC = 09:12 IST  (primary, just before open)
+    - cron: '11 4 * * 1-5'   # 04:11 UTC = 09:41 IST  (backup if the first is skipped)
+    - cron: '41 4 * * 1-5'   # 04:41 UTC = 10:11 IST  (second backup)
+    - cron: '0 7 * * *'      # 07:00 UTC = 12:30 IST  -> afternoon loop to the close
   workflow_dispatch:
     inputs:
       interval:
@@ -22,6 +29,13 @@ on:
       min_mcap:
         description: 'only refresh stocks >= this mcap (Cr); 0 = all'
         default: '50'
+
+# Only one movers loop alive at a time. A later trigger cancels the running loop and starts
+# fresh (cheap — it just recomputes rvol baselines), so redundant morning slots give coverage
+# without stacking multiple 3-hour jobs.
+concurrency:
+  group: intraday-movers
+  cancel-in-progress: true
 
 jobs:
   movers:

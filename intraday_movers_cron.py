@@ -245,6 +245,14 @@ def main():
             alert_delivery.run('price', apply=True)
         except Exception as e:
             print('[alerts] skipped:', str(e)[:120], flush=True)
+        # Heartbeat for the freshness monitor: stock_master has no price-update timestamp,
+        # so this is the single source of truth for "live prices are flowing".
+        try:
+            sb.table('app_config').upsert(
+                {'key': 'hb_prices_at', 'value': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')},
+                on_conflict='key').execute()
+        except Exception as e:
+            print('[hb] skipped:', str(e)[:80], flush=True)
 
     if args.once or not args.loop:
         n = tick(stocks, baselines)

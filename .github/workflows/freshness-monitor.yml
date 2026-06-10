@@ -1,0 +1,36 @@
+name: Freshness Monitor (feed_status + admin bell alerts)
+
+# Measures DATA AGE per feed and writes public.feed_status (the website /status page).
+# Catches the failure mode GitHub's own notifications can't: a schedule that silently
+# never ran (no failure event, data just quietly goes stale). On an OK->STALE
+# transition it sends an in-product notification to the admin account; recovery
+# sends a follow-up. Off-peak minutes because GH drops on-the-hour schedules.
+
+on:
+  schedule:
+    - cron: '13,43 3-16 * * 1-5'   # every 30 min, 08:43-22:13 IST, weekdays
+    - cron: '13 5 * * 0,6'         # one weekend check (10:43 IST)
+  workflow_dispatch:
+
+concurrency:
+  group: freshness-monitor
+  cancel-in-progress: true
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Check all feeds
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python freshness_monitor.py

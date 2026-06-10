@@ -1,0 +1,35 @@
+name: Alert Delivery - event types (insider/promoter/news)
+
+# Evening pass for the alert types fed by post-close filings. Price-type alerts are NOT
+# handled here - they run every 15 min inside the intraday-movers loop. Two off-peak
+# slots because GitHub drops on-the-hour schedules; the script's per-day dedupe makes a
+# double-fire harmless.
+
+on:
+  schedule:
+    - cron: '52 14 * * 1-5'   # 14:52 UTC = 20:22 IST (after the 20:00 IST filings feed)
+    - cron: '37 16 * * 1-5'   # 16:37 UTC = 22:07 IST (backup; dedupe suppresses repeats)
+  workflow_dispatch:
+
+concurrency:
+  group: alerts-events
+  cancel-in-progress: false
+
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Evaluate event alerts -> user_notifications
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python alert_delivery.py --apply --types events

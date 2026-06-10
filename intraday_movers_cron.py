@@ -236,9 +236,20 @@ def main():
     baselines = load_baselines(stocks)
     print(f'[intraday] baselines for {len(baselines)} stocks', flush=True)
 
+    def check_alerts():
+        # In-product alert delivery: evaluate price-type user_alerts against the prices this
+        # tick just wrote (user_notifications -> website bell + app). Never let an alert
+        # failure kill the price loop.
+        try:
+            import alert_delivery
+            alert_delivery.run('price', apply=True)
+        except Exception as e:
+            print('[alerts] skipped:', str(e)[:120], flush=True)
+
     if args.once or not args.loop:
         n = tick(stocks, baselines)
         print(f'[intraday] one refresh: {n} stocks updated @ {datetime.datetime.now(IST):%H:%M:%S IST}', flush=True)
+        check_alerts()
         return
 
     deadline = time.time() + args.max_minutes * 60
@@ -249,6 +260,7 @@ def main():
             break
         n = tick(stocks, baselines); ticks += 1
         print(f'[intraday] tick {ticks}: {n} updated @ {datetime.datetime.now(IST):%H:%M:%S IST}', flush=True)
+        check_alerts()
         time.sleep(min(args.interval, max(0, deadline - time.time())))
     print(f'[intraday] done after {ticks} ticks', flush=True)
 

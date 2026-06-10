@@ -20,7 +20,7 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -36,4 +36,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python kite_daily_update.py --workers 4 ${{ github.event.inputs.args || '--no-intraday' }}
+        # default now INCLUDES the intraday pass (was --no-intraday, which meant the
+        # intraday/{sym}.json bucket NEVER refreshed from the cloud and the app's 1D
+        # charts went permanently stale - caught 2026-06-10). timeout raised 90->150.
+        run: python kite_daily_update.py --workers 4 ${{ github.event.inputs.args || '' }}

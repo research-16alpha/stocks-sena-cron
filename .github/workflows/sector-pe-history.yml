@@ -1,0 +1,33 @@
+name: Sector P/E History (monthly cap-weighted aggregates)
+
+# Monthly series -> refresh shortly after each month end, with a mid-month
+# catch-up slot (GitHub drops single schedules). Writes daily/sector_pe_history.json.
+
+on:
+  schedule:
+    - cron: '0 13 1 * *'    # 1st of month, 18:30 IST
+    - cron: '0 13 15 * *'   # mid-month catch-up
+  workflow_dispatch:
+
+concurrency:
+  group: sector-pe-history
+  cancel-in-progress: true
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Compute sector P/E history
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python compute_sector_pe.py --apply

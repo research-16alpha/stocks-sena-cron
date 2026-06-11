@@ -1,0 +1,34 @@
+name: Delivery Percentage (NSE security-wise bhavcopy)
+
+# Daily delivery-%: NSE publishes sec_bhavdata_full ~18:00 IST. Two slots because
+# GitHub drops single schedules; the script has a 4-day lookback so any missed day
+# self-heals on the next run.
+
+on:
+  schedule:
+    - cron: '15 13 * * 1-5'   # 18:45 IST — just after publication
+    - cron: '0 15 * * 1-5'    # 20:30 IST — catch-up
+  workflow_dispatch:
+
+concurrency:
+  group: delivery-scrape
+  cancel-in-progress: false
+
+jobs:
+  delivery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Scrape delivery data (4-day lookback)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python delivery_scrape.py --days 4

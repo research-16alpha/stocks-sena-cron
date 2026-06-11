@@ -1,0 +1,34 @@
+name: Global Cues (US/Asia indices, Brent, USD-INR via Yahoo)
+
+# Context cards for the market-mood page. Yahoo chart API (non-Indian tickers only —
+# Indian prices stay Kite). Half-hourly through IST trading + evening; plus a slot
+# after the US close. Script refuses to overwrite the store when <4 cues fetch.
+
+on:
+  schedule:
+    - cron: '*/30 2-14 * * 1-5'   # 07:30-20:00 IST, every 30 min
+    - cron: '30 20 * * 1-5'       # post-US-close refresh (02:00 IST)
+  workflow_dispatch:
+
+concurrency:
+  group: global-cues
+  cancel-in-progress: true
+
+jobs:
+  cues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Fetch global cues
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python global_cues.py

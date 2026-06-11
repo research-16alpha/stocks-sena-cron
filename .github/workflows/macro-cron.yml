@@ -1,5 +1,7 @@
 name: Macro Daily Refresh
 
+# NOTE 2026-06-11: website /macro page removed (use /global). This feed now serves
+# ONLY the app MacroDashboardScreen — retire after that screen migrates to global view.
 on:
   schedule:
     - cron: '0 12 * * 1-5'  # Daily 12:00 UTC = 5:30 PM IST (after Indian + early US markets)

@@ -73,15 +73,31 @@ def main():
     # cohort = listed IPOs matched to stock_master; or explicit symbols
     if ONLY:
         syms = ONLY
+    elif '--all' in sys.argv:
+        # universe mode: every active stock that has an SHP xbrl on record - fills
+        # the verified-shares anchor for the sentinel + SHP-primary mcap everywhere
+        rows, off = [], 0
+        while True:
+            d = requests.get(f'{URL}/rest/v1/stock_master?select=symbol&is_active=eq.true&offset={off}&limit=1000',
+                             headers=H, timeout=30).json()
+            rows += d
+            if len(d) < 1000:
+                break
+            off += 1000
+        syms = sorted(x['symbol'] for x in rows)
     else:
         cal = requests.get(f'{URL}/rest/v1/ipo_calendar?select=matched_symbol&status=eq.Listed&matched_symbol=not.is.null',
                            headers=H, timeout=25).json()
         syms = sorted({x['matched_symbol'] for x in cal})
-    inq = ','.join(f'"{s}"' for s in syms)
-    sm = {r['symbol']: r for r in requests.get(
-        f'{URL}/rest/v1/stock_master?select=symbol,bse_scrip_code,market_cap_cr&symbol=in.({inq})', headers=H, timeout=25).json()}
-    shp = requests.get(f'{URL}/rest/v1/shareholding_periods?select=symbol,period,promoter_pct,xbrl_url,total_shares'
-                       f'&symbol=in.({inq})&order=period.desc', headers=H, timeout=25).json()
+    sm, shp = {}, []
+    for i in range(0, len(syms), 120):
+        chunk = syms[i:i + 120]
+        inq = ','.join(f'"{s}"' for s in chunk)
+        for r in requests.get(f'{URL}/rest/v1/stock_master?select=symbol,bse_scrip_code,market_cap_cr&symbol=in.({inq})',
+                              headers=H, timeout=25).json():
+            sm[r['symbol']] = r
+        shp += requests.get(f'{URL}/rest/v1/shareholding_periods?select=symbol,period,promoter_pct,xbrl_url,total_shares'
+                            f'&symbol=in.({inq})&order=period.desc', headers=H, timeout=30).json()
     latest_shp = {}
     for r in shp:
         if r['symbol'] not in latest_shp and r.get('xbrl_url'):
@@ -92,9 +108,13 @@ def main():
     for sym in syms:
         rec = latest_shp.get(sym)
         if not rec:
-            print(f'  {sym:12s} no SHP filing yet — waits for first quarter-end')
+            if not ONLY and '--all' not in sys.argv:
+                print(f'  {sym:12s} no SHP filing yet - waits for first quarter-end')
             skip += 1
             continue
+        if '--all' in sys.argv and rec.get('total_shares'):
+            skip += 1
+            continue  # already anchored
         try:
             total, note = shares_from_xbrl(rec['xbrl_url'], rec.get('promoter_pct'))
         except Exception as e:

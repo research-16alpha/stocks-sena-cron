@@ -92,8 +92,11 @@ def main():
                   data=json.dumps([{'key': 'sentinel_top50', 'value': json.dumps(top_syms)}]), timeout=20)
 
     print(f'[sentinel] {len(stocks)} stocks checked | {len(findings)} findings')
-    for f in findings[:40]:
-        print('  ' + f)
+    # public repo -> Actions logs are world-readable; symbol-level detail goes to the
+    # admin bell (private table) only, never stdout, when running in CI
+    if os.environ.get('GITHUB_ACTIONS') != 'true':
+        for f in findings[:40]:
+            print('  ' + f)
 
     if findings and NOTIFY:
         body = '\n'.join(findings[:12]) + (f'\n...and {len(findings)-12} more' if len(findings) > 12 else '')

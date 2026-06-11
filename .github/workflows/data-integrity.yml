@@ -36,6 +36,18 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python fix_face_values.py --apply
+      - name: Weekly scale-row repair (proof-gated AUTO rows only, Sundays)
+        if: github.event.schedule == '0 11 * * 0' || github.event_name == 'workflow_dispatch'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python fix_scale_rows.py --apply
+      - name: Monthly universe share-anchor refresh (1st Sunday equivalent - run weekly, idempotent)
+        if: github.event.schedule == '0 11 * * 0'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python fill_share_counts.py --apply --all
       - name: Split-triggered face refresh (daily)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

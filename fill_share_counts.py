@@ -92,12 +92,19 @@ def main():
     sm, shp = {}, []
     for i in range(0, len(syms), 120):
         chunk = syms[i:i + 120]
+        # params= so symbols with & (M&M, J&KBANK) get URL-encoded - raw f-string
+        # querystrings broke and PostgREST returned an error dict (TypeError crash)
         inq = ','.join(f'"{s}"' for s in chunk)
-        for r in requests.get(f'{URL}/rest/v1/stock_master?select=symbol,bse_scrip_code,market_cap_cr&symbol=in.({inq})',
-                              headers=H, timeout=25).json():
+        d1 = requests.get(f'{URL}/rest/v1/stock_master',
+                          params={'select': 'symbol,bse_scrip_code,market_cap_cr', 'symbol': f'in.({inq})'},
+                          headers=H, timeout=25).json()
+        for r in (d1 if isinstance(d1, list) else []):
             sm[r['symbol']] = r
-        shp += requests.get(f'{URL}/rest/v1/shareholding_periods?select=symbol,period,promoter_pct,xbrl_url,total_shares'
-                            f'&symbol=in.({inq})&order=period.desc', headers=H, timeout=30).json()
+        d2 = requests.get(f'{URL}/rest/v1/shareholding_periods',
+                          params={'select': 'symbol,period,promoter_pct,xbrl_url,total_shares',
+                                  'symbol': f'in.({inq})', 'order': 'period.desc'},
+                          headers=H, timeout=30).json()
+        shp += d2 if isinstance(d2, list) else []
     latest_shp = {}
     for r in shp:
         if r['symbol'] not in latest_shp and r.get('xbrl_url'):

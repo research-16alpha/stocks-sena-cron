@@ -53,6 +53,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python fix_face_values.py --apply --recent-splits
+      - name: Weekly full stock-health check (Sundays)
+        if: github.event.schedule == '0 11 * * 0' || github.event_name == 'workflow_dispatch'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python stock_health.py
       - name: Metrics sentinel
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

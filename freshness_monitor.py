@@ -169,6 +169,37 @@ FEEDS = [
 ]
 
 
+# self-heal: when a feed goes stale because GitHub dropped a schedule (recurring
+# disease - 4th incident 2026-06-11), dispatch the owning workflow directly. Uses
+# the runner's GITHUB_TOKEN (needs `permissions: actions: write` in the yml).
+HEAL_WORKFLOW = {
+    'candles': 'kite-daily-update.yml',
+    'intraday': 'kite-daily-update.yml',
+    'prices': 'intraday-movers.yml',
+    'breadth': 'breadth-cron.yml',
+    'mood': 'mood-history-cron.yml',
+    'pcr': 'pcr-cron.yml',
+    'fii_flows': 'fii-dii-cron.yml',
+}
+
+def heal(feed_key):
+    tok = os.environ.get('GITHUB_TOKEN')
+    wf = HEAL_WORKFLOW.get(feed_key)
+    if not tok or not wf:
+        return False
+    try:
+        r = requests.post(
+            f'https://api.github.com/repos/research-16alpha/stocks-sena-cron/actions/workflows/{wf}/dispatches',
+            headers={'Authorization': 'Bearer ' + tok, 'Accept': 'application/vnd.github+json',
+                     'X-GitHub-Api-Version': '2022-11-28'},
+            json={'ref': 'main'}, timeout=20)
+        print(f'  [heal] dispatched {wf}: HTTP {r.status_code}')
+        return r.status_code == 204
+    except Exception as e:
+        print(f'  [heal] dispatch failed: {str(e)[:60]}')
+        return False
+
+
 def notify_admin(title, body):
     if DRY:
         print(f'  WOULD NOTIFY ADMIN: {title} | {body}')
@@ -202,8 +233,11 @@ def main():
         stale_since = (prev.get(key) or {}).get('stale_since')
         if status == 'stale' and was != 'stale':
             stale_since = NOW.strftime('%Y-%m-%dT%H:%M:%SZ')
+            healed = heal(key)
             notify_admin(f'⚠️ Data feed stale: {label}',
-                         f'{detail}. Expected: {expected}. Check /status and the cron logs.')
+                         f'{detail}. Expected: {expected}.'
+                         + (' Auto-heal: owning cron re-dispatched.' if healed
+                            else ' Check /status and the cron logs.'))
             stale_now.append(key)
         elif status != 'stale':
             if was == 'stale':

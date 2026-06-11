@@ -26,6 +26,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import os as _os
+def _outp(name):
+    p = r'e:/Stocks sena/_logs/' + name
+    return p if _os.name == 'nt' else name
+
+
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except Exception:
@@ -216,7 +222,7 @@ def main():
             tag = 'AUTO  ' if fx['auto'] else 'REVIEW'
             print(f"  {tag} {f['symbol']:14s} {fx['key']:28s} {fx['period']}  factor {fx['factor']:.0e}  {','.join(fx['fields'])[:50]}")
 
-    json.dump(plan, open(r'e:/Stocks sena/_logs/scale_fix_plan.json', 'w'), indent=1)
+    json.dump(plan, open(_outp('scale_fix_plan.json'), 'w'), indent=1)
     n_auto = sum(1 for p in plan if p['auto'])
     print(f'[scale-fix] plan: {n_auto} auto rows, {len(plan) - n_auto} review rows')
     if not APPLY:
@@ -249,7 +255,7 @@ def main():
         if r.status_code == 200:
             fixed_syms.append(f['symbol'])
     print(f'[scale-fix] applied to {len(fixed_syms)} bundles')
-    open(r'e:/Stocks sena/_logs/scale_fixed_syms.txt', 'w').write(','.join(fixed_syms))
+    open(_outp('scale_fixed_syms.txt'), 'w').write(','.join(fixed_syms))
 
 
 if __name__ == '__main__':

@@ -27,6 +27,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import os as _os
+def _outp(name):
+    p = r'e:/Stocks sena/_logs/' + name
+    return p if _os.name == 'nt' else name
+
+
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except Exception:

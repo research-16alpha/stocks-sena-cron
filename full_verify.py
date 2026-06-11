@@ -24,6 +24,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import os as _os
+def _outp(name):
+    p = r'e:/Stocks sena/_logs/' + name
+    return p if _os.name == 'nt' else name
+
+
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except Exception:
@@ -175,7 +181,7 @@ def main():
         for sym, mc, d in lst[:10]:
             print(f'   {sym:14s} mcap {mc:10,.0f}  {d}')
     json.dump({'coverage': cov, 'flagged': flagged},
-              open(r'e:/Stocks sena/_logs/full_verify_report.json', 'w'), indent=1)
+              open(_outp('full_verify_report.json'), 'w'), indent=1)
     print('\n[verify] report -> _logs/full_verify_report.json')
 
 

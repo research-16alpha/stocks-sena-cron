@@ -23,6 +23,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+import os as _os
+def _outp(name):
+    p = r'e:/Stocks sena/_logs/' + name
+    return p if _os.name == 'nt' else name
+
+
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except Exception:
@@ -150,7 +156,7 @@ def main():
                          data=json.dumps(doc, separators=(',', ':')), timeout=60)
         print(f'[sector-pe] wrote {len(out)} sectors (HTTP {r.status_code})')
     else:
-        json.dump(doc, open(r'e:/Stocks sena/_logs/sector_pe_preview.json', 'w'), indent=1)
+        json.dump(doc, open(_outp('sector_pe_preview.json'), 'w'), indent=1)
         print(f'[sector-pe] dry-run: {len(out)} sectors -> _logs/sector_pe_preview.json')
 
 

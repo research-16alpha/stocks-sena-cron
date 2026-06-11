@@ -161,7 +161,12 @@ def main():
 
     print(f'[face] missing->set: {fixed_missing} | mismatched->corrected: {mismatched} | no source: {nosrc}')
     print(f'[face] metrics recompute needed for {len(changed)} stocks (face != implicit 10)')
-    open(r'e:/Stocks sena/_logs/face_changed_syms.txt', 'w').write(','.join(changed))
+    # report path that exists on both Windows (laptop) and Linux (Actions runner)
+    out_path = r'e:/Stocks sena/_logs/face_changed_syms.txt' if os.name == 'nt' else 'face_changed_syms.txt'
+    try:
+        open(out_path, 'w').write(','.join(changed))
+    except OSError:
+        pass
 
 
 if __name__ == '__main__':

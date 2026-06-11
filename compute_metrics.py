@@ -187,7 +187,14 @@ def compute(d, use_ttm=False, live_price=None):
     cf = latest(d, 'annual_cf', 'annual_cf_consolidated', 'annual_cf_standalone')
     snap = (d.get('snapshot') or [{}])[0] if isinstance(d.get('snapshot'), list) and d.get('snapshot') else (d.get('snapshot') or {})
     price = live_price if live_price is not None else g(snap, 'current_price', 'price')
-    face = g(snap, 'face_value') or 10.0
+    # NO face-value default. The old `or 10.0` fabricated a 10x-wrong mcap/PE/PB for
+    # every face-1/2/5 stock whose snapshot lacked the field (NMDC showed mcap 7,655cr
+    # vs real 77,904cr, 2026-06-11). Missing face -> price-derived metrics stay null;
+    # fix_face_values.py keeps snapshots populated from NSE EQUITY_L / BSE lists.
+    face = g(snap, 'face_value')
+    # SHP-verified share count (written by fill_share_counts) beats eqcap/face -
+    # one verified input instead of two unverified ones.
+    shp_shares = g(snap, 'total_shares')
 
     # H9: a price is only valid for VALUATION ratios (pb / ev_ebitda / market_cap)
     # if it is (a) reasonably fresh and (b) sits over reasonably fresh fundamentals.
@@ -217,7 +224,11 @@ def compute(d, use_ttm=False, live_price=None):
     # price-derived ratio below (ev_ebitda, market_cap_cr, pe). equity_capital/face =
     # shares outstanding, so this auto-tracks rights/bonus/splits from the filings.
     mcap_fresh = None
-    if equity_capital and face and val_price:
+    if shp_shares and val_price:
+        _mc = round(shp_shares * val_price / 1e7, 2)
+        if 1 < _mc < 2_000_000:
+            mcap_fresh = _mc
+    elif equity_capital and face and val_price:
         _mc = round(equity_capital * val_price / face, 2)
         if 1 < _mc < 2_000_000:
             mcap_fresh = _mc

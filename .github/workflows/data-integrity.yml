@@ -1,0 +1,43 @@
+name: Data Integrity (face values weekly + metrics sentinel daily)
+
+# The derived-metrics protection pipeline (built 2026-06-11 after the NMDC 10x bug):
+#   - fix_face_values: authoritative face values from NSE EQUITY_L + BSE scrip list
+#     into every bundle snapshot (weekly Sun; new listings get theirs via the
+#     nightly enrich chain)
+#   - metrics_sentinel: cross-checks published mcap vs SHP-share anchors, flags
+#     impossible ratios + suspicious top-50 entrants; bell-notifies admin
+
+on:
+  schedule:
+    - cron: '0 14 * * *'    # sentinel daily 19:30 IST (after the valuation cron)
+    - cron: '0 11 * * 0'    # faces weekly Sunday 16:30 IST
+  workflow_dispatch:
+
+concurrency:
+  group: data-integrity
+  cancel-in-progress: false
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Refresh face values (Sundays only)
+        if: github.event.schedule == '0 11 * * 0' || github.event_name == 'workflow_dispatch'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python fix_face_values.py --apply
+      - name: Metrics sentinel
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python metrics_sentinel.py --notify

@@ -120,10 +120,12 @@ def main():
         snap = b.get('snapshot')
         if isinstance(snap, list) and snap:
             snap[0]['face_value'] = face
+            snap[0]['total_shares'] = total      # SHP-verified; compute_metrics' primary shares source
         elif isinstance(snap, dict):
             snap['face_value'] = face
+            snap['total_shares'] = total
         else:
-            b['snapshot'] = [{'face_value': face}]
+            b['snapshot'] = [{'face_value': face, 'total_shares': total}]
         real_bs = any((row for k in ('annual_bs', 'annual_bs_consolidated', 'annual_bs_standalone')
                        for row in (b.get(k) or []) if row.get('_source') != 'shp_xbrl'))
         synth = [row for row in (b.get('annual_bs') or []) if row.get('_source') == 'shp_xbrl']

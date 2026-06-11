@@ -36,6 +36,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python fix_face_values.py --apply
+      - name: Split-triggered face refresh (daily)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python fix_face_values.py --apply --recent-splits
       - name: Metrics sentinel
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

@@ -37,6 +37,9 @@ SVC = os.environ.get('SUPABASE_SERVICE_KEY') or open(r'e:/Stocks sena/.supabase-
 H = {'apikey': SVC, 'Authorization': 'Bearer ' + SVC}
 STORE_H = {**H, 'x-upsert': 'true', 'Content-Type': 'application/json'}
 APPLY = '--apply' in sys.argv
+RECENT_SPLITS = '--recent-splits' in sys.argv  # daily mode: only symbols with a
+# split/consolidation ex-date in the last 10 days (face changes same-day; the
+# weekly full pass would otherwise lag up to 7 days of 2x/5x-wrong mcap)
 NSE_H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124', 'Referer': 'https://www.nseindia.com/'}
 BSE_H = {'User-Agent': 'Mozilla/5.0 Chrome/120', 'Accept': 'application/json',
          'Origin': 'https://www.bseindia.com', 'Referer': 'https://www.bseindia.com/'}
@@ -92,6 +95,18 @@ def main():
         if len(d) < 1000:
             break
         off += 1000
+    if RECENT_SPLITS:
+        import datetime as _dt
+        since = (_dt.date.today() - _dt.timedelta(days=10)).isoformat()
+        acts = requests.get(f'{URL}/rest/v1/corporate_actions?select=symbol,subject,ex_date'
+                            f'&ex_date=gte.{since}&or=(subject.ilike.*split*,subject.ilike.*sub-division*,subject.ilike.*subdivision*,subject.ilike.*consolidat*)&limit=500',
+                            headers=H, timeout=30).json()
+        split_syms = {a['symbol'] for a in acts if a.get('symbol')}
+        stocks = [s2 for s2 in stocks if s2['symbol'] in split_syms]
+        print(f'[face] recent-splits mode: {len(split_syms)} symbols with split/consolidation ex-date since {since}')
+        if not stocks:
+            print('[face] nothing to do')
+            return
     print(f'[face] {len(stocks)} active stocks')
 
     changed, fixed_missing, mismatched, nosrc = [], 0, 0, 0

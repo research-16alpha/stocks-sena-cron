@@ -431,7 +431,12 @@ def piotroski(pl, bs, cf):
 
 
 def download_bundle(sym):
-    r = requests.get(f'{URL}/storage/v1/object/public/{BUCKET}/{sym}.json', timeout=30)
+    # cache-bust: Supabase storage CDN caches public objects ~1h. A bundle fixed
+    # minutes ago would otherwise be read STALE here, re-poisoning stock_master
+    # metrics from corrupt pre-fix data (ACEINTEG mcap re-corruption, 2026-06-11).
+    import time as _t
+    r = requests.get(f'{URL}/storage/v1/object/public/{BUCKET}/{sym}.json',
+                     params={'cb': int(_t.time() // 300)}, timeout=30)
     return r.json() if r.status_code == 200 else None
 
 

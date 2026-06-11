@@ -10,12 +10,20 @@ on:
     # 10:20 UTC = 3:50 PM IST, just after the NSE close. The morning token is
     # still valid at this hour (Kite tokens last until ~next pre-open).
     - cron: '20 10 * * 1-5'
+    # 13:40 UTC = 7:10 PM IST catch-up — GitHub drops schedules and transient
+    # Supabase timeouts killed the 2026-06-10 run; the script is idempotent so a
+    # second pass is harmless and self-heals the day (concurrency dedupes overlap).
+    - cron: '40 13 * * 1-5'
   workflow_dispatch:
     inputs:
       args:
         description: 'extra args, e.g. --prices-only or --no-intraday'
         required: false
         default: '--no-intraday'
+
+concurrency:
+  group: kite-daily-update
+  cancel-in-progress: false   # let a running update finish; queue the next
 
 jobs:
   update:

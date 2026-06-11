@@ -196,15 +196,28 @@ def refresh_intraday(stock):
     day = raw[-1]['date'].date()
     bars = [[b['date'].strftime('%H:%M'), round(b['close'], 4), int(b['volume'])] for b in raw if b['date'].date() == day]
     doc = {'symbol': sym, 'date': day.isoformat(), 'bars': bars}
-    requests.put(f'{URL}/storage/v1/object/intraday/{sym}.json', headers=STORE_H,
-                 data=json.dumps(doc, separators=(',', ':')), timeout=30)
-    return (sym, 'ok')
+    # transient Supabase ReadTimeouts happen mid-run; an uncaught one here used to
+    # propagate through run_pool's ex.map and kill the WHOLE update (2026-06-10).
+    for attempt in range(3):
+        try:
+            requests.put(f'{URL}/storage/v1/object/intraday/{sym}.json', headers=STORE_H,
+                         data=json.dumps(doc, separators=(',', ':')), timeout=30)
+            return (sym, 'ok')
+        except Exception:
+            time.sleep(1.5 * (attempt + 1))
+    return (sym, 'puterr')
 
 
 def run_pool(label, fn, stocks, workers):
+    def safe(s):
+        # one worker exception must never kill the whole run (ex.map re-raises)
+        try:
+            return fn(s)
+        except Exception:
+            return (s.get('symbol', '?'), 'err')
     t0 = time.time(); stat = {'ok': 0, 'empty': 0, 'err': 0}; n = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for sym, res in ex.map(fn, stocks):
+        for sym, res in ex.map(safe, stocks):
             n += 1; stat[res if res in stat else 'err'] += 1
             if n % 400 == 0:
                 print(f'  {label} {n}/{len(stocks)} · {stat} · {n/(time.time()-t0):.1f}/s', flush=True)

@@ -85,10 +85,20 @@ def check(s, anchor_shares):
         return best[1] if best else None
 
     eqcap = latest('annual_bs', 'equity_capital')
-    # owners' equity first - same convention as the engine's pick_equity (group
-    # total_equity includes minority interest; BI/DELPHIFX have NEGATIVE NCI, so
-    # comparing published pb against group equity false-flagged them)
-    toteq = latest('annual_bs', 'equity_attributable_to_owners') or latest('annual_bs', 'total_equity')
+    # owners' equity first, but BOTH fields from the SAME latest balance-sheet row -
+    # field-wise latest() mixed an old attributable row with a new total_equity row
+    # (TEMBO class false flags). Mirrors the engine's pick_equity on its latest row.
+    _bs_row, _bs_p = None, ''
+    for k in ('annual_bs', 'annual_bs_consolidated', 'annual_bs_standalone'):
+        for row in (b.get(k) or []):
+            p = str(row.get('period'))[:10]
+            if (n(row.get('equity_attributable_to_owners')) is not None or n(row.get('total_equity')) is not None) and p > _bs_p:
+                _bs_row, _bs_p = row, p
+    toteq = None
+    if _bs_row is not None:
+        toteq = n(_bs_row.get('equity_attributable_to_owners'))
+        if toteq is None:
+            toteq = n(_bs_row.get('total_equity'))
     # TTM NP - SAME definition as compute_metrics.ttm_flows (the canonical PE basis):
     # merged array first, the last 4 quarters must be consecutive (span 250-400d) and
     # all non-null; otherwise PE was published on the ANNUAL basis, so compare to that.

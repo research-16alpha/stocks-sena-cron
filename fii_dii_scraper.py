@@ -45,19 +45,25 @@ HEADERS = {
 
 
 def warm_session() -> requests.Session:
+    # Warm-up is BEST-EFFORT: NSE throttles cloud IPs intermittently and a timeout
+    # here used to crash the whole run before fetch() ever got its retries.
     s = requests.Session()
     s.headers.update(HEADERS)
-    s.get(NSE_HOME, timeout=10)
-    time.sleep(1)
-    s.get("https://www.nseindia.com/reports/fii-dii", timeout=10)
-    time.sleep(1)
+    for url in (NSE_HOME, "https://www.nseindia.com/reports/fii-dii"):
+        try:
+            s.get(url, timeout=25)
+        except Exception as e:
+            print(f"[fiidii] warmup {url} failed (continuing): {e}", file=sys.stderr)
+        time.sleep(1.2)
     return s
 
 
-def fetch(session: requests.Session, retries: int = 3) -> list | None:
+def fetch(session: requests.Session = None, retries: int = 4) -> list | None:
     for attempt in range(retries):
         try:
-            r = session.get(NSE_FII_DII_URL, timeout=20)
+            if session is None or attempt > 0:   # fresh cookies per retry
+                session = warm_session()
+            r = session.get(NSE_FII_DII_URL, timeout=30)
             if r.status_code == 200:
                 data = r.json()
                 # Endpoint sometimes wraps in {"data": [...]} or returns raw list

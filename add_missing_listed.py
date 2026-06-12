@@ -29,6 +29,11 @@ import argparse, json, os, re
 
 from kite_daily_update import kite, sb  # shared Kite client (vault token) + Supabase
 
+# BSE appends disclosure markers to scrip names ("Foo Ltd-$"); keep display names clean.
+def clean_name(n):
+    return re.sub(r'[\s\-]*[\$\*#]+\s*$', '', (n or '').strip()).strip()
+
+
 
 def load_all(table, cols):
     out, off = [], 0
@@ -90,7 +95,7 @@ def main():
         nsym = (m.get('nse_symbol') or '').strip()
         scrip = str(m.get('bse_scrip_code') or '').strip() or None
         isin = (m.get('isin') or '').strip() or None
-        name = (m.get('name') or '').strip()
+        name = clean_name(m.get('name'))
 
         inst = exch = None
         # NSE first: exact symbol, then base (drop series suffix like -B / -RE / -BE)
@@ -122,7 +127,7 @@ def main():
             n_collide += 1
             continue
 
-        row = {'symbol': tsym, 'name': name or inst.get('name') or tsym,
+        row = {'symbol': tsym, 'name': name or clean_name(inst.get('name')) or tsym,
                'kite_token': tok, 'kite_tradingsymbol': tsym, 'kite_exchange': exch,
                'is_active': True}
         if kisin:

@@ -12,7 +12,7 @@ never deletes — so a transient miss can't shrink the universe.
 Run:  py refresh_listing_master.py          # write
       py refresh_listing_master.py --dry     # fetch + report, no write
 """
-import argparse, csv, datetime, io, json, os, time
+import argparse, csv, datetime, io, json, os, re, time
 import requests
 
 URL = os.environ.get('SUPABASE_URL', 'https://tbeadvvkqyrhtendttrg.supabase.co').rstrip('/')
@@ -22,6 +22,12 @@ UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 BSE_H = {'User-Agent': UA, 'Accept': 'application/json', 'Origin': 'https://www.bseindia.com', 'Referer': 'https://www.bseindia.com/'}
 BSE_MASTER = 'https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w'
 NSE_EQUITY_L = 'https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv'
+
+
+# BSE appends disclosure markers to scrip names ("Foo Ltd-$", "Bar Ltd*");
+# strip them so display names stay clean everywhere downstream.
+def clean_name(n):
+    return re.sub(r'[\s\-]*[\$\*#]+\s*$', '', (n or '').strip()).strip()
 
 
 def _retry(fn, n=4):
@@ -98,7 +104,7 @@ def main():
         r = row(isin)
         if r['bse_scrip_code'] is None or st == 'Active':  # prefer the Active row on duplicate ISIN
             r['bse_scrip_code'] = str(b.get('SCRIP_CD') or '').strip() or r['bse_scrip_code']
-            r['name'] = b.get('Issuer_Name') or b.get('Scrip_Name') or r['name']
+            r['name'] = clean_name(b.get('Issuer_Name') or b.get('Scrip_Name')) or r['name']
             r['status'] = 'active' if st == 'Active' else (st.lower() or r['status'])
             try:
                 fv = b.get('FACE_VALUE')
@@ -108,7 +114,7 @@ def main():
     for n in (nse or []):
         r = row(n['isin'])
         r['nse_symbol'] = n['symbol']
-        r['name'] = r['name'] or n['name']
+        r['name'] = r['name'] or clean_name(n['name'])
         r['status'] = 'active'  # presence in EQUITY_L == actively listed
         ld = _date(n['listing_date'])
         if ld:

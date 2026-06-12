@@ -45,6 +45,8 @@ INDICES = {
     'NIFTY 100': 'ind_nifty100list',
     'NIFTY 200': 'ind_nifty200list',
     'NIFTY 500': 'ind_nifty500list',
+    'NIFTY MIDCAP 100': 'ind_niftymidcap100list',
+    'NIFTY SMALLCAP 100': 'ind_niftysmallcap100list',
     'NIFTY BANK': 'ind_niftybanklist',
     'NIFTY IT': 'ind_niftyitlist',
     'NIFTY FMCG': 'ind_niftyfmcglist',

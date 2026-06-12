@@ -111,20 +111,24 @@ def check(s, anchor_shares):
         exp = shp * px / 1e7
         if exp > 25 and abs(mc - exp) / exp > 0.25:
             iss.append(('MCAP_ANCHOR', f'mcap {mc:,.0f} vs shares-implied {exp:,.0f}'))
+    # DVR listings are a separate share class: the line's mcap covers DVR shares only,
+    # while eqcap/total_equity cover the whole company - every cross-check below is
+    # definitionally void for them.
+    is_dvr = sym.endswith('DVR') or 'DVREQS' in sym or sym.endswith('-B1')
     # MCAP_INTERNAL
-    if eqcap and face and px and mc and not shp:
+    if eqcap and face and px and mc and not shp and not is_dvr:
         exp = eqcap * px / face
         if exp > 25 and abs(mc - exp) / exp > 0.25:
             iss.append(('MCAP_INTERNAL', f'mcap {mc:,.0f} vs eqcap-implied {exp:,.0f}'))
     # PE_RECOMPUTE
-    if pe and mc and ttm and ttm > 0:
+    if pe and mc and ttm and ttm > 0 and not is_dvr:
         exp = mc / ttm
         if abs(pe - exp) / exp > 0.20:
             iss.append(('PE_RECOMPUTE', f'pe {pe} vs recomputed {exp:.1f}'))
     # PB_RECOMPUTE - the published pb excludes minority interest while total_equity
     # includes it, so small gaps are definitional. Flag only directional extremes
     # (>2.5x apart) which indicate a genuinely wrong input.
-    if pb and mc and toteq and toteq > 0:
+    if pb and mc and toteq and toteq > 0 and not is_dvr:
         exp = mc / toteq
         if pb / exp > 2.5 or exp / pb > 2.5:
             iss.append(('PB_RECOMPUTE', f'pb {pb} vs recomputed {exp:.2f}'))

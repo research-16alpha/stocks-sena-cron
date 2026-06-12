@@ -246,9 +246,13 @@ def compute(d, use_ttm=False, live_price=None):
     # Fresh market cap from the LIVE price — the single source of truth for every
     # price-derived ratio below (ev_ebitda, market_cap_cr, pe). equity_capital/face =
     # shares outstanding, so this auto-tracks rights/bonus/splits from the filings.
+    # mcap needs only a fresh price + a VERIFIED share count: shares x price holds
+    # even when the annuals are stale (CHOWGULSTM filed nothing since 2023 but still
+    # trades), so SHP-anchored mcap bypasses the ann_fresh gate that pe/pb keep.
+    mcap_px = val_price if val_price else (price if (price_fresh and shp_shares) else None)
     mcap_fresh = None
-    if shp_shares and val_price:
-        _mc = round(shp_shares * val_price / 1e7, 2)
+    if shp_shares and mcap_px:
+        _mc = round(shp_shares * mcap_px / 1e7, 2)
         if 1 < _mc < 2_000_000:
             mcap_fresh = _mc
     elif equity_capital and face and val_price:
@@ -427,7 +431,10 @@ def compute(d, use_ttm=False, live_price=None):
     if val_price:
         pe = None
         if net_profit is not None and net_profit > 0:
-            mcap_pe = m.get('market_cap_cr') or g(snap, 'market_cap_cr')
+            # FRESH mcap only - the old snapshot-mcap fallback quietly froze P/E at
+            # whatever price the snapshot was taken at (APOORVA: 223x off a months-old
+            # mcap vs ~213x live). No fresh shares -> no P/E, consistent with mcap/PB.
+            mcap_pe = m.get('market_cap_cr')
             if mcap_pe and mcap_pe > 0:
                 pe = sane(round(mcap_pe / net_profit, 2), 0, 5000)
         m['pe_ratio'] = pe

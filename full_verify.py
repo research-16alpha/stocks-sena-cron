@@ -85,7 +85,10 @@ def check(s, anchor_shares):
         return best[1] if best else None
 
     eqcap = latest('annual_bs', 'equity_capital')
-    toteq = latest('annual_bs', 'total_equity')
+    # owners' equity first - same convention as the engine's pick_equity (group
+    # total_equity includes minority interest; BI/DELPHIFX have NEGATIVE NCI, so
+    # comparing published pb against group equity false-flagged them)
+    toteq = latest('annual_bs', 'equity_attributable_to_owners') or latest('annual_bs', 'total_equity')
     # TTM NP - SAME definition as compute_metrics.ttm_flows (the canonical PE basis):
     # merged array first, the last 4 quarters must be consecutive (span 250-400d) and
     # all non-null; otherwise PE was published on the ANNUAL basis, so compare to that.

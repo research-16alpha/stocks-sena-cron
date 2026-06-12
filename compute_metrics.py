@@ -80,12 +80,28 @@ def g(row, *names):
 
 
 def is_bank_bundle(d):
+    bankish = False
     for k in ('annual_bs', 'annual_pl', 'annual_bs_consolidated', 'annual_pl_consolidated'):
         for r in (d.get(k) or []):
             if r.get('_is_bank') or r.get('interest_earned') is not None:
-                return True
-    s = (d.get('snapshot') or [{}])
-    return False
+                bankish = True
+                break
+        if bankish:
+            break
+    if not bankish:
+        return False
+    # Holdco override: a group that CONSOLIDATES a bank (CENTRUM owns Unity SFB)
+    # carries interest_earned next to normal revenue_from_operations in its latest
+    # annual - that is a conglomerate filing, not a bank's. A bank's own filing
+    # (incl. NBFC bank-schema rows tagged _is_bank) never reports both.
+    rows = sorted([r for r in (d.get('annual_pl') or []) if r.get('period')],
+                  key=lambda r: str(r['period']))
+    if rows:
+        last = rows[-1]
+        if last.get('revenue_from_operations') is not None and not last.get('_is_bank') \
+                and last.get('interest_earned') is None:
+            return False
+    return True
 
 
 def sane(v, lo, hi):
@@ -216,6 +232,13 @@ def compute(d, use_ttm=False, live_price=None):
                 price_fresh = False
     ann_fresh = bool(_latest_ann and str(_latest_ann)[:10] >= '2024-03-31')
     val_price = price if (price_fresh and ann_fresh) else None
+    if price_fresh and not ann_fresh:
+        # Zombie-ratio clear: the stock trades but its fundamentals end pre-2024
+        # (SETUINFRA class) - ratios computed off dead inputs are actively removed
+        # rather than left frozen at their last value.
+        m_zombie = True
+    else:
+        m_zombie = False
 
     total_equity = pick_equity(bs)
     equity_capital = g(bs, 'equity_capital')
@@ -300,12 +323,19 @@ def compute(d, use_ttm=False, live_price=None):
             m['roe_pct'] = roe
             snap_patch['roe'] = roe
 
-    # P/B (gate 0..5000) — only on a fresh price over fresh fundamentals (H9)
-    if val_price and bvps and bvps > 0:
-        pb = sane(round(val_price / bvps, 2), 0, 5000)
-        if pb is not None:
-            snap_patch['pb'] = pb
-            m['pb_ratio'] = pb
+    # P/B (gate 0..5000) — only on a fresh price over fresh fundamentals (H9).
+    # Like P/E, an uncomputable P/B is actively CLEARED, never left stale: negative
+    # owners' equity (EBIX/Eraaya filed -1,896 cr attributable) means there is no
+    # meaningful P/B, and showing a years-old one is worse than showing none.
+    if val_price:
+        pb = None
+        if bvps and bvps > 0:
+            pb = sane(round(val_price / bvps, 2), 0, 5000)
+        snap_patch['pb'] = pb
+        m['pb_ratio'] = pb
+    elif m_zombie:
+        snap_patch['pb'] = None
+        m['pb_ratio'] = None
 
     if not bank:
         # ROCE (gate -100..300)
@@ -402,6 +432,9 @@ def compute(d, use_ttm=False, live_price=None):
                 pe = sane(round(mcap_pe / net_profit, 2), 0, 5000)
         m['pe_ratio'] = pe
         snap_patch['pe'] = pe
+    elif m_zombie:
+        m['pe_ratio'] = None
+        snap_patch['pe'] = None
 
     if use_ttm:
         m['_basis'] = metrics_basis              # ignored by patch_stock_master (not a SM_COL)

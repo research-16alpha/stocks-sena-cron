@@ -83,18 +83,25 @@ def check(s, anchor_shares):
 
     eqcap = latest('annual_bs', 'equity_capital')
     toteq = latest('annual_bs', 'total_equity')
-    # TTM NP from merged quarters
-    q = None
-    for k in ('quarterly_results_consolidated', 'quarterly_results_standalone', 'quarterly_results'):
-        if b.get(k) and len(b[k]) >= 4:
-            q = b[k]
-            break
+    # TTM NP - SAME definition as compute_metrics.ttm_flows (the canonical PE basis):
+    # merged array first, the last 4 quarters must be consecutive (span 250-400d) and
+    # all non-null; otherwise PE was published on the ANNUAL basis, so compare to that.
     ttm = None
-    if q:
-        nps = [n(r2.get('net_profit')) for r2 in sorted(q, key=lambda x: str(x.get('period')))]
-        nps = [v for v in nps if v is not None]
-        if len(nps) >= 4:
-            ttm = sum(nps[-4:])
+    qr = b.get('quarterly_results') or b.get('quarterly_results_consolidated') or []
+    rows4 = sorted([r2 for r2 in qr if r2.get('period')], key=lambda x: str(x.get('period')))[-4:]
+    if len(rows4) == 4:
+        try:
+            import datetime as _dt
+            d0 = _dt.date.fromisoformat(str(rows4[0]['period'])[:10])
+            d3 = _dt.date.fromisoformat(str(rows4[-1]['period'])[:10])
+            span = (d3 - d0).days
+        except Exception:
+            span = 0
+        nps = [n(r2.get('net_profit')) for r2 in rows4]
+        if 250 <= span <= 400 and all(v is not None for v in nps):
+            ttm = round(sum(nps), 2)
+    if ttm is None:
+        ttm = latest('annual_pl', 'net_profit')   # annual fallback = what compute used
 
     # MCAP_ANCHOR
     if shp and px and mc:

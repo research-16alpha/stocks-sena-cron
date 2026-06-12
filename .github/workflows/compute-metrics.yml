@@ -10,12 +10,20 @@ on:
   schedule:
     # Daily 13:00 UTC (6:30 PM IST) — after the day's fundamental/quarterly crons.
     - cron: '0 13 * * *'
+    # Catch-up slot: GitHub silently drops schedules; the job is fill-don't-overwrite
+    # and idempotent, so a second run is harmless. This re-anchor also clears any
+    # intraday valuation drift, so it must not silently miss a day.
+    - cron: '45 14 * * *'
   workflow_dispatch:
+
+concurrency:
+  group: compute-metrics
+  cancel-in-progress: false
 
 jobs:
   metrics:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python

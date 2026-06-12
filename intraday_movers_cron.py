@@ -66,7 +66,7 @@ def load_stocks(min_mcap):
     out, off = [], 0
     while True:
         q = sb.table('stock_master').select(
-            'symbol,kite_tradingsymbol,kite_exchange,market_cap_cr,pe_ratio,pb_ratio'
+            'symbol,kite_tradingsymbol,kite_exchange,market_cap_cr,pe_ratio,pb_ratio,latest_price'
         ).eq('is_active', True).not_.is_('kite_token', 'null')
         if min_mcap > 0:
             q = q.gte('market_cap_cr', min_mcap)
@@ -163,11 +163,13 @@ def tick(stocks, baselines):
         if prev_close:
             patch['price_change_pct'] = round((lp / prev_close - 1) * 100, 2)
             # Live valuation: market_cap / pe / pb are LINEAR in price (mcap = shares*price,
-            # pe = mcap/profit, pb = price/bvps). compute_metrics computed the stored values at
-            # the prev close, so scaling them by lp/prev_close reproduces that exact formula on
-            # the live price. Bounded factor guards a bad quote. Assumes ONE live-scaler per
-            # session (the daily cloud --loop); compute_metrics re-anchors the base each EOD.
-            f = lp / prev_close
+            # pe = mcap/profit, pb = price/bvps). The stored values were last WRITTEN TOGETHER
+            # with stored latest_price (same patch), so scaling by lp/stored-latest_price
+            # reproduces shares*lp exactly and is restart-proof. Scaling by lp/prev_close (the
+            # old way) re-applied the day's whole move every time a fresh loop instance started
+            # mid-session on an already-scaled base - top gainers compounded +30..70% mcap.
+            base_px = s.get('latest_price')
+            f = (lp / base_px) if base_px and base_px > 0 else (lp / prev_close)
             if 0.5 < f < 1.5:
                 # Bound to the SAME sane ranges compute_metrics enforces, so the live value
                 # never drifts past its EOD cap (mcap < 25 lakh cr, pe/pb in 0..5000). Out of

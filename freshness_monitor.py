@@ -14,6 +14,7 @@ Run:  python freshness_monitor.py            # check + write feed_status (defaul
       python freshness_monitor.py --dry-run  # print only, no writes/notifications
 """
 import datetime as dt
+import time
 import json
 import os
 import sys
@@ -71,11 +72,19 @@ def age_min(ts):
 
 
 def latest(table, col, extra=''):
-    try:
-        rows = get(f'{table}?select={col}{extra}&order={col}.desc.nullslast&limit=1')
-        return parse_ts(rows[0].get(col)) if rows else None
-    except Exception:
-        return None
+    # A FAILED probe is not evidence of a stale feed: under DB load (the universe
+    # metrics recompute) this query can time out, and silently returning None here
+    # fired a false "no data found" bell. Retry with backoff; if every attempt
+    # errors, raise so the caller reports a probe failure instead of staleness.
+    last_exc = None
+    for attempt in range(3):
+        try:
+            rows = get(f'{table}?select={col}{extra}&order={col}.desc.nullslast&limit=1')
+            return parse_ts(rows[0].get(col)) if rows else None
+        except Exception as e:
+            last_exc = e
+            time.sleep(4 * (attempt + 1))
+    raise RuntimeError(f'probe failed: {str(last_exc)[:50]}')
 
 
 def storage_json(path):
@@ -214,12 +223,16 @@ def main():
     out, stale_now = [], []
     print(f'=== freshness monitor @ {NOW_IST:%Y-%m-%d %H:%M IST} (market {"OPEN" if market_open() else "closed"}) ===')
     for key, label, cat, expected, fn in FEEDS:
+        probe_err = False
         try:
             ts, ok_min, note = fn()
         except Exception as e:
-            ts, ok_min, note = None, 0, f'check error: {str(e)[:60]}'
+            ts, ok_min, note, probe_err = None, 0, f'probe error: {str(e)[:60]}', True
         a = age_min(ts)
-        if ts is None:
+        if probe_err:
+            # a failed probe says nothing about the feed - report, never bell/heal
+            status, detail = 'warn', note
+        elif ts is None:
             status, detail = 'stale', f'no data found ({note})'
         elif ok_min >= 10 ** 6:
             status, detail = 'ok', note

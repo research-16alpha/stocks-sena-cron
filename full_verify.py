@@ -71,8 +71,11 @@ def check(s, anchor_shares):
     shp = anchor_shares.get(sym) or n(snap.get('total_shares'))
 
     def latest(prefix, field):
+        # MERGED array first - compute_metrics reads the merged statements, so the
+        # verifier must judge against the same basis (consolidated-first here used to
+        # false-flag stocks whose merged and consolidated values differ, e.g. LGHL).
         best = None
-        for k in (prefix + '_consolidated', prefix, prefix + '_standalone'):
+        for k in (prefix, prefix + '_consolidated', prefix + '_standalone'):
             rows = b.get(k) or []
             for row in rows:
                 p = str(row.get('period'))[:10]

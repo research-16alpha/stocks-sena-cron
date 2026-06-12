@@ -164,9 +164,42 @@ def process_symbol(sym, scrip, since_fy, flagdurs, dry):
         arr.append(rec_part)
         return 1
 
+    # Filer mis-scale guard: some companies tag iXBRL facts with the wrong scale
+    # (NAVNETEDUL/PARKHOTELS FY26 filed crore values tagged scale=5 -> parsed /100;
+    # RANASUG the inverse -> x10). equity_capital is stable year to year, so a
+    # 10x/100x jump vs the prior filed year proves the factor - rescale the whole
+    # filing (all three statements share the tagging) before it enters the bundle.
+    SKIP_RESCALE = ('eps', '_pct', 'ratio', 'margin', 'face', 'per_share')
+
+    def _prior_eqcap(arr, period):
+        prevs = [r0 for r0 in sorted(arr, key=lambda x: str(x.get('period')))
+                 if r0.get('period') and r0['period'] < period
+                 and isinstance(r0.get('equity_capital'), (int, float)) and r0['equity_capital'] > 0]
+        return prevs[-1]['equity_capital'] if prevs else None
+
+    def _filer_scale_fix(rec, arr_bs, period):
+        ec = (rec.get('bs') or {}).get('equity_capital')
+        prior = _prior_eqcap(arr_bs, period)
+        if not (isinstance(ec, (int, float)) and ec > 0 and prior):
+            return
+        K = None
+        for cand in (10.0, 100.0):
+            if abs(prior / (ec * cand) - 1) < 0.25:
+                K = cand            # parsed too SMALL -> multiply up
+            elif abs((prior * cand) / ec - 1) < 0.25:
+                K = 1.0 / cand      # parsed too BIG -> divide down
+        if not K:
+            return
+        for part in ('pl', 'bs', 'cf'):
+            for k, v in list((rec.get(part) or {}).items()):
+                if isinstance(v, (int, float)) and not any(t in k.lower() for t in SKIP_RESCALE):
+                    rec[part][k] = round(v * K, 4)
+        print(f'  [scale-guard] {period} filer mis-scale x{K} corrected (eqcap {ec} vs prior {prior})', flush=True)
+
     stats = {'pl': 0, 'bs': 0, 'periods': sorted(by_period)}
     for period, bases in by_period.items():
         for basis, rec in bases.items():
+            _filer_scale_fix(rec, bs_c if basis == 'consolidated' else bs_s, period)
             if basis == 'consolidated':
                 stats['pl'] += upsert(pl_c, rec['pl'], period)
                 upsert(bs_c, rec['bs'], period)

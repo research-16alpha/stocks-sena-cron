@@ -275,9 +275,19 @@ def compute(d, use_ttm=False, live_price=None):
     m = {}
     snap_patch = {}
 
-    # Book value per share (gate: |bvps| < 1e6)
+    # Book value per share (gate: |bvps| < 1e6).
+    # SHP-verified share count FIRST (same primary-shares rule as mcap): the
+    # eqcap/face route breaks when equity_capital includes preference capital
+    # (BAJAJHIND: ₹2.8k cr pref -> shares 12x overstated, pb 12x wrong) or when
+    # the filed eqcap itself is corrupt (JASH).
     bvps = None
-    if total_equity is not None and equity_capital and equity_capital != 0 and face:
+    shp_sh = g(snap, 'total_shares')
+    if total_equity is not None and shp_sh and shp_sh > 0:
+        cand = round(total_equity * 1e7 / shp_sh, 2)
+        if abs(cand) < 1_000_000:
+            bvps = cand
+            snap_patch['book_value'] = bvps
+    if bvps is None and total_equity is not None and equity_capital and equity_capital != 0 and face:
         cand = round(total_equity * face / equity_capital, 2)
         if abs(cand) < 1_000_000:
             bvps = cand
@@ -381,13 +391,17 @@ def compute(d, use_ttm=False, live_price=None):
     # P/E = market cap / net-profit-TTM (split-immune; net profit, unlike summing per-share
     # EPS, is unaffected by stock splits). Recomputed here daily with the fresh price so it
     # never goes stale. Same fresh-price gate (H9) as pb / ev / mcap.
-    if val_price and net_profit is not None and net_profit > 0:
-        mcap_pe = m.get('market_cap_cr') or g(snap, 'market_cap_cr')
-        if mcap_pe and mcap_pe > 0:
-            pe = sane(round(mcap_pe / net_profit, 2), 0, 5000)
-            if pe is not None:
-                m['pe_ratio'] = pe
-                snap_patch['pe'] = pe
+    # When a P/E CANNOT be computed (profit missing/negative, or over the 5000 cap), the
+    # column is actively CLEARED: a stale P/E from an old price is worse than none (the
+    # SVJ/OCTAWARE class - profit went missing and a years-old P/E kept showing).
+    if val_price:
+        pe = None
+        if net_profit is not None and net_profit > 0:
+            mcap_pe = m.get('market_cap_cr') or g(snap, 'market_cap_cr')
+            if mcap_pe and mcap_pe > 0:
+                pe = sane(round(mcap_pe / net_profit, 2), 0, 5000)
+        m['pe_ratio'] = pe
+        snap_patch['pe'] = pe
 
     if use_ttm:
         m['_basis'] = metrics_basis              # ignored by patch_stock_master (not a SM_COL)

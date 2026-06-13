@@ -173,6 +173,10 @@ FEEDS = [
     ('articles', 'Research articles', 'content', 'daily-ish (≤ 48h)', lambda: (latest('articles', 'published_at', '&status=eq.published'), 48 * 60, 'article engine')),
     ('bulk_deals', 'Bulk / block deals', 'filings', 'trading days (≤ 3d)', lambda: (latest('bulk_deals', 'date'), 3 * 1440, 'deals scraper')),
     ('insider', 'Insider trades', 'filings', 'trading days (≤ 4d)', lambda: (latest('insider_trades', 'created_at'), 4 * 1440, 'insider feed')),
+    # Was a blind spot: corporate_actions (dividends/splits ex-dates) went stale for days
+    # when NSE soft-blocked the cloud runner and nothing watched it. Now monitored on its
+    # fetched_at (laptop daily_feeds refresh); a 3-day breach fires the bell + heals.
+    ('corp_actions', 'Corporate actions / dividends', 'filings', 'daily, laptop job (≤ 3d)', lambda: (latest('corporate_actions', 'fetched_at'), 3 * 1440, 'corp-actions scraper (laptop)')),
     ('macro', 'Macro indicators', 'market', 'every few days (≤ 5d)', lambda: (latest('macro_indicators', 'date'), 5 * 1440, 'macro cron')),
     ('mf_nav', 'Mutual fund NAVs', 'market', 'daily, laptop job (≤ 4d)', lambda: (latest('mf_nav', 'nav_date'), 4 * 1440, 'AMFI NAV (laptop 22:00)')),
 ]

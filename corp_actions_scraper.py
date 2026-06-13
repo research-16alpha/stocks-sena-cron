@@ -21,8 +21,14 @@ from datetime import datetime
 import requests
 from supabase import create_client
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://tbeadvvkqyrhtendttrg.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+if not SUPABASE_KEY:
+    try:
+        with open(r"e:/Stocks sena/.supabase-service-key") as _f:
+            SUPABASE_KEY = _f.read().strip()
+    except FileNotFoundError:
+        pass
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 NSE_HOME = "https://www.nseindia.com"

@@ -1,10 +1,10 @@
 name: Corporate Actions Scraper
 
 on:
-  schedule:
-    # Twice daily: 09:00 UTC (2:30 PM IST) + 13:30 UTC (7 PM IST)
-    # NSE updates corp actions during market hours + after close.
-    - cron: '0 9,13 * * 1-5'
+  # SCHEDULE DISABLED 2026-06-13: NSE soft-blocks this endpoint for datacenter IPs - the
+  # cloud runner gets STALE cached rows (no forward ex-dates) while reporting success, so
+  # it quietly stopped updating. Now runs from the laptop via daily_feeds.bat (residential
+  # IP, where NSE serves the real forward window). Kept for manual dispatch only.
   workflow_dispatch:
 
 jobs:

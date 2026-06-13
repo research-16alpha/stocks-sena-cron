@@ -87,6 +87,23 @@ def latest(table, col, extra=''):
     raise RuntimeError(f'probe failed: {str(last_exc)[:50]}')
 
 
+def gmp_age():
+    # GMP is only expected when issues are open/upcoming; between IPOs an empty window is
+    # normal (report OK). When issues ARE open, watch the freshest gmp_updated stamp.
+    opn = get('ipo_calendar?select=symbol&or=(status.eq.Open,status.eq.Upcoming)&limit=1')
+    if not opn:
+        return (NOW, 10 ** 9, 'no open IPOs - GMP idle')
+    row = get('ipo_calendar?select=gmp_updated&or=(status.eq.Open,status.eq.Upcoming)'
+              '&gmp_updated=not.is.null&order=gmp_updated.desc&limit=1')
+    if not row:
+        return (None, 2 * 1440, 'open IPOs but no GMP captured yet')
+    try:
+        ts = dt.datetime.strptime(row[0]['gmp_updated'].replace(' UTC', ''), '%Y-%m-%d %H:%M').replace(tzinfo=dt.timezone.utc)
+        return (ts, 2 * 1440, 'GMP scraper (laptop)')
+    except Exception:
+        return (NOW, 10 ** 9, 'GMP stamp unparseable')
+
+
 def storage_json(path):
     try:
         r = requests.get(f'{URL}/storage/v1/object/public/{path}', headers=H, timeout=25)
@@ -177,6 +194,10 @@ FEEDS = [
     # when NSE soft-blocked the cloud runner and nothing watched it. Now monitored on its
     # fetched_at (laptop daily_feeds refresh); a 3-day breach fires the bell + heals.
     ('corp_actions', 'Corporate actions / dividends', 'filings', 'daily, laptop job (≤ 3d)', lambda: (latest('corporate_actions', 'fetched_at'), 3 * 1440, 'corp-actions scraper (laptop)')),
+    # GMP from grey-market trackers (laptop job; sites may also soft-block cloud). Only
+    # checked when there ARE open/upcoming issues - the primary market goes quiet between
+    # IPOs, so an empty window is normal, not stale. Watched from day one (soft-block lesson).
+    ('gmp', 'IPO grey-market premium', 'filings', 'daily when IPOs open (≤ 2d)', lambda: gmp_age()),
     ('macro', 'Macro indicators', 'market', 'every few days (≤ 5d)', lambda: (latest('macro_indicators', 'date'), 5 * 1440, 'macro cron')),
     ('mf_nav', 'Mutual fund NAVs', 'market', 'daily, laptop job (≤ 4d)', lambda: (latest('mf_nav', 'nav_date'), 4 * 1440, 'AMFI NAV (laptop 22:00)')),
 ]

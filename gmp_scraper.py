@@ -116,6 +116,10 @@ def main():
             requests.patch(f"{URL}/rest/v1/ipo_calendar?symbol=eq.{requests.utils.quote(c['symbol'])}",
                            headers={**H, 'Content-Type': 'application/json', 'Prefer': 'return=minimal'},
                            json={'gmp': gmp, 'gmp_pct': pct, 'gmp_updated': stamp, 'gmp_sources': sources}, timeout=20)
+            # append one point per symbol per day for the GMP trend chart (upsert = idempotent)
+            requests.post(f'{URL}/rest/v1/ipo_gmp_history?on_conflict=symbol,date',
+                          headers={**H, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+                          json={'symbol': c['symbol'], 'date': dt.date.today().isoformat(), 'gmp': gmp, 'gmp_pct': pct}, timeout=20)
             n += 1
     print(f'[gmp] {"dry-run" if DRY else f"updated {n}"} IPOs @ {stamp}')
 
